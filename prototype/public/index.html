@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shift Brief</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot"></span> Shift Brief <span class="sub">what's different today, for every shift</span></div>
+  <nav>
+    <button data-view="driver" class="on">Driver sign-on</button>
+    <button data-view="control">Control room</button>
+    <button data-view="write">Write an instruction</button>
+  </nav>
+  <div class="meta" id="meta"></div>
+</header>
+
+<main>
+  <!-- Driver -->
+  <section id="view-driver" class="view on">
+    <div class="driver-wrap">
+      <div class="phone">
+        <div class="pick">
+          <label for="duty">Your duty</label>
+          <input id="duty" list="duties" placeholder="Service number or line, e.g. S0202 or 20">
+          <datalist id="duties"></datalist>
+        </div>
+        <div id="brief"></div>
+      </div>
+      <div class="side">
+        <div id="driver-map" class="map"></div>
+        <p class="hint">Your route in blue. Today's changes in red and orange.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Control -->
+  <section id="view-control" class="view">
+    <div class="control">
+      <div class="col list">
+        <div class="tabs">
+          <button data-filter="all" class="on">All changes</button>
+          <button data-filter="unread">Not read</button>
+          <button data-filter="gaps">Sources disagree <span id="gapcount" class="pill warn"></span></button>
+        </div>
+        <div id="changes"></div>
+      </div>
+      <div class="col detail">
+        <div id="control-map" class="map tall"></div>
+        <div id="coverage"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Write -->
+  <section id="view-write" class="view">
+    <div class="write">
+      <h2>Write an instruction the way you would today</h2>
+      <p class="muted">It is matched to the real network: line numbers and stop names are checked against Bordeaux's data, and every driver whose shift crosses it gets it in their brief.</p>
+      <textarea id="ins-text" rows="4">Arrêt Place de la Victoire fermé à partir de 14h, lignes 1 et 20 : desserte reportée cours Aristide Briand.</textarea>
+      <div class="row"><button id="ins-preview" class="primary">Check it against the network</button></div>
+      <div id="ins-result"></div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
