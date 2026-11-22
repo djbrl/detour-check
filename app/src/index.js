@@ -4,7 +4,7 @@ import Resolver from '@forge/resolver';
 import { kvs } from '@forge/kvs';
 import {
   ITEM, ISSUE_KEY, need, getSettings, saveSettings, currentDesk, changeRequests, changeRequestView,
-  readiness, createChangeRequest, savePlan, signOff, checkAll, getPlan, markIssue,
+  readiness, createChangeRequest, savePlan, signOff, checkAll, getPlan, markIssue, addComment,
 } from './desk.js';
 import { summary, detail, outlook, IMPACTS } from './model.js';
 
@@ -59,7 +59,7 @@ const timed = (name, fn) => async (req) => {
   try { return await fn(req); } finally { console.log(`timing ${name} ${Date.now() - t0}ms`); }
 };
 
-resolver.define('getItem', async ({ payload }) => itemView(str(payload?.id, 40)));
+resolver.define('getItem', async ({ payload }) => itemView(str(payload?.id, 40), { slim: !!payload?.slim }));
 
 // The card's first step. Answering opens the plan in Jira if there is none yet, so nobody has to
 // "create a change request" before they can say what the works mean.

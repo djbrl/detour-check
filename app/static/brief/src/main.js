@@ -49,7 +49,6 @@ const store = {
 // Today on the network's clock (the demo day, or now), set by the desk or the panel when they load.
 let TODAY = new Date().toISOString().slice(0, 10);
 const shortDay = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: iso.slice(0, 4) !== TODAY.slice(0, 4) ? 'numeric' : undefined, timeZone: 'Europe/Paris' });
-const shortDates = (d) => (d.ends ? `${shortDay(d.starts)} – ${shortDay(d.ends)}` : `From ${shortDay(d.starts)}`);
 
 // ---------- map ----------
 
@@ -193,14 +192,17 @@ function steps(cr, ready, o) {
       ${choices(ANSWERS.map(([k]) => k).filter((k) => k !== pub.suggest))}`;
   const jobs = tasks(cr, o);
   const teams = cr?.impact === 'none' ? TEAMS.slice(0, 1) : TEAMS;
-  return `<ol class="steps">
+  return `${r?.ready ? '<div class="ready">✓ Ready to go live: every team signed off and the checks pass.</div>' : ''}
+  <ol class="steps">
     <li class="${cr?.impact ? 'done' : 'now'}">${first}</li>
     <li class="${!cr?.impact ? 'later' : r?.ready ? 'done' : 'now'}"><div class="step-k">Team sign-offs</div>
       <div class="step-sub">Each team confirms its part is done${cr?.key ? `, recorded on ${esc(cr.key)}` : ''}.</div>
       <ul class="teams">${teams.map(([role, t]) => { const s = sign(role); return `<li><span class="team"><b>${t}</b><span>${esc(jobs[role])}</span></span>
         <button data-role="${role}" aria-pressed="${!!s?.at}" ${s?.at ? `title="Signed ${esc(when(s.at))}"` : ''} ${cr?.impact ? '' : 'disabled'}>${s?.at ? `✓ ${esc(names[s.by] || 'Signed')}` : 'Sign off'}</button></li>`; }).join('')}</ul></li>
     ${cr?.impact === 'none' ? '' : `<li class="${!cr?.impact ? 'later' : cr.notice ? 'done' : 'now'}"><div class="step-k">Passenger notice</div>
-      <button class="btn" id="write-notice" ${cr?.impact ? '' : 'disabled'}>${cr?.notice ? 'Rewrite with Rovo' : 'Write with Rovo'}</button></li>`}
+      ${cr?.notice
+        ? `<div class="answered"><span>Drafted on ${esc(cr.key)}, for Passenger info to check</span><button class="link small" id="write-notice">Rewrite</button></div>`
+        : `<button class="btn" id="write-notice" ${cr?.impact ? '' : 'disabled'}>Write with Rovo</button>`}</li>`}
   </ol>`;
 }
 
@@ -429,6 +431,22 @@ function update(d) {
   renderDetail();
 }
 
+// Rovo works in its own chat, so while it may be writing to this plan the card asks again every few
+// seconds and shows what it recorded, for up to five minutes or until another card is opened.
+const said = (d) => JSON.stringify([d?.changeRequest?.key, d?.changeRequest?.impact, d?.changeRequest?.notice, d?.changeRequest?.signoffs?.map((s) => s.at)]);
+let following = null;
+function follow(id) {
+  clearInterval(following);
+  const until = Date.now() + 5 * 60 * 1000;
+  following = setInterval(async () => {
+    if (selected !== id || Date.now() > until) { clearInterval(following); return; }
+    try {
+      const out = await call('getItem', { id, slim: true });
+      if (selected === id && current?.id === id && said(out) !== said(current)) update({ ...current, ...out });
+    } catch { /* the next round tries again */ }
+  }, 5000);
+}
+
 function wireCard(item, d) {
   const cr = d.changeRequest;
   wireSteps($('#detail'));
@@ -442,9 +460,9 @@ function wireCard(item, d) {
   });
   $$('#detail [data-impact]').forEach((b) => (b.onclick = () => run(b, 'answer', { id: item.id, impact: b.dataset.impact }, (out) => { if (!cr) showFlag(`Saved in Jira as ${out.changeRequest.key}`); })));
   $$('#detail [data-role]').forEach((b) => (b.onclick = () => run(b, 'tick', { id: item.id, role: b.dataset.role, undo: b.getAttribute('aria-pressed') === 'true' })));
-  $('#write-notice')?.addEventListener('click', () => askRovo(noticePrompt(cr.key)));
+  $('#write-notice')?.addEventListener('click', () => { askRovo(noticePrompt(cr.key)); follow(item.id); });
   $('#open-cr')?.addEventListener('click', () => openIssue(cr.key));
-  $('#rovo-handle')?.addEventListener('click', () => askRovo(handlePrompt(item)));
+  $('#rovo-handle')?.addEventListener('click', () => { askRovo(handlePrompt(item)); follow(item.id); });
 }
 
 // ---------- the welcome screen: three steps, once, before the desk ----------
@@ -539,6 +557,19 @@ async function loadNames(ids) {
   } catch { /* names are a nicety; the sign-off stands without them */ }
 }
 
+let followingPanel = null;
+function followPanel() {
+  clearInterval(followingPanel);
+  const until = Date.now() + 5 * 60 * 1000;
+  followingPanel = setInterval(async () => {
+    if (Date.now() > until) { clearInterval(followingPanel); return; }
+    try {
+      const next = await call('getPanel');
+      if (said(next) !== said(P)) { P = next; renderPanel(); }
+    } catch { /* the next round tries again */ }
+  }, 5000);
+}
+
 async function renderPanel() {
   const root = $('#panel');
   const cr = P.changeRequest;
@@ -576,8 +607,8 @@ async function renderPanel() {
     });
     renderPanel();
   }));
-  $('#write-notice')?.addEventListener('click', () => askRovo(noticePrompt(P.key)));
-  $('#rovo-handle').onclick = () => askRovo(d ? handlePrompt(d) : noticePrompt(P.key));
+  $('#write-notice')?.addEventListener('click', () => { askRovo(noticePrompt(P.key)); followPanel(); });
+  $('#rovo-handle').onclick = () => { askRovo(d ? handlePrompt(d) : noticePrompt(P.key)); followPanel(); };
   $('#map-details')?.addEventListener('toggle', (e) => { if (e.target.open) mapInto($('#panel-map'), d); });
 }
 

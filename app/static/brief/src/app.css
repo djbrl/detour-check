@@ -292,6 +292,7 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
 .step-k { font-weight: 600; }
 .step-sub { font-size: 12px; color: var(--muted); }
 .published { margin: 0; color: var(--muted); }
+.ready { margin: 0 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--ok-bg); color: var(--ok); font-weight: 600; font-size: 13px; }
 .confirm { display: flex; gap: 6px; }
 .confirm .btn { min-width: 64px; }
 .answered { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
