@@ -1,5 +1,5 @@
-// Builds the change desk from Bordeaux Métropole open data: which planned disruptions touch the bus
-// and tram network, and whether what was approved for each one matches what is actually published.
+// Builds the desk from Bordeaux Métropole open data: which roadworks permits touch a bus route,
+// and whether the detour published for each one goes round it for the whole time.
 // The network (lines, routes, stops) comes from a snapshot the caller passes to useNetwork(); the
 // three feeds are fetched live or read from a frozen demo day, so judges see what the video shows.
 
@@ -107,33 +107,56 @@ export const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, 
 const titleCase = (s) => norm(s).replace(/(^|[\s'-])([a-z])/g, (m, a, b) => a + b.toUpperCase()).replace(/\bSt\b/g, 'St').replace(/\bDe\b/g, 'de').replace(/\bDu\b/g, 'du').replace(/\bLa\b/g, 'la');
 const DIRECTION = { ALLER: 'Outbound', RETOUR: 'Inbound', ALLER_RETOUR: 'Both directions' };
 
-// "Rue Surson au N° 59 (Bordeaux) situé en agglomération" -> "59 Rue Surson, Bordeaux"
+// "Rue Surson au N° 59 (Bordeaux) situé en agglomération" -> "59 Rue Surson, Bordeaux";
+// "Rue Frantz Schrader à partir du N° 6 jusqu'au N° 8 (Bordeaux)" -> "6 Rue Frantz Schrader, Bordeaux".
 function place(localisation) {
   // Permits list several addresses; the first is enough to find it.
   const s = String(localisation || '').split(/\s*(?:situ[ée]s?\s+)?en agglom[ée]ration\s*/i)[0].trim();
-  const m = s.match(/^(.*?)(?:\s+au\s+N°\s*([\w/-]+))?\s*\(([^)]+)\)\s*$/i);
+  const m = s.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
   if (!m) return s || 'Unnamed street';
-  return `${m[2] ? `${m[2]} ` : ''}${m[1].trim()}, ${m[3].trim()}`;
+  let street = m[1];
+  const no = street.match(/\b(?:au|du) N°\s*([\w/-]+)/i)?.[1];
+  street = street.replace(/\s+(?:au N°|à partir d[ue]|de l'intersection|jusqu'|sur le côté|côté|entre |face au|à l'angle|à l'intersection).*$/i, '').trim();
+  return `${no ? `${no} ` : ''}${street || m[1].trim()}, ${m[2].trim()}`;
 }
 
-// Roadworks permit nature codes, in English.
-const NATURE = [
-  [/immeuble/i, 'Building works'], [/eclairage/i, 'Street lighting'], [/electricit/i, 'Electricity'],
-  [/eau potable/i, 'Water main'], [/assainissement/i, 'Sewer'], [/gaz/i, 'Gas'], [/t[ée]l[ée]com/i, 'Telecoms'],
-  [/chaud|froid/i, 'District heating'], [/espace public/i, 'Street works'],
+// Roadworks permits describe the works with two French codes: what is worked on, and what is done to
+// it. Together they make one plain phrase, such as "Replacing a water connection".
+const UTILITIES = [
+  [/eau potable/i, { connection: 'a water connection', network: 'the water main' }],
+  [/gaz/i, { connection: 'a gas connection', network: 'the gas main' }],
+  [/electricit/i, { connection: 'a power connection', network: 'power cables', furniture: 'electrical cabinets' }],
+  [/eclairage/i, { connection: 'a street light connection', network: 'street lighting', furniture: 'street lights' }],
+  [/t[ée]l[ée]com/i, { connection: 'a telecoms connection', network: 'telecoms cables' }],
+  [/assainissement/i, { connection: 'a sewer connection', network: 'the sewer' }],
+  [/chaud|froid/i, { connection: 'a district heating connection', network: 'district heating pipes' }],
 ];
-const NATURE2 = [
-  [/cl[ôo]ture/i, 'site fence on the street'], [/[ée]chafaudage/i, 'scaffolding on the street'], [/manutention/i, 'lifting and handling'],
-  [/voirie/i, 'road layout'], [/trottoir/i, 'pavement repair'], [/sondage/i, 'trial holes'], [/espaces verts/i, 'planting'],
-  [/mobilier/i, 'street furniture'], [/s[ée]curit/i, 'safety works'], [/d[ée]molition/i, 'demolition'],
-  [/cr[ée]ation/i, 'new'], [/renouvellement/i, 'renewal'], [/r[ée]paration/i, 'repair'], [/entretien/i, 'maintenance'],
-  [/suppression/i, 'removal'], [/construction/i, 'construction'], [/am[ée]nagement/i, 'redesign'],
+const ACTIONS = [
+  [/cr[ée]ation/i, (x) => `New ${bare(x)}`], [/renouvellement/i, (x) => `Replacing ${x}`],
+  [/r[ée]paration/i, (x) => `Repairing ${x}`], [/entretien/i, (x) => `${cap(bare(x))} maintenance`],
+  [/suppression/i, (x) => `Removing ${x}`], [/modification/i, (x) => `Changing ${x}`],
 ];
-function nature(n1, n2) {
-  const a = NATURE.find(([re]) => re.test(n1 || ''))?.[1] || 'Works';
-  const kind = /branchement/i.test(n1 || '') ? ' connection' : /r[ée]seau/i.test(n1 || '') ? ' network' : '';
-  const b = NATURE2.find(([re]) => re.test(n2 || ''))?.[1];
-  return `${a}${kind}${b ? `: ${b}` : ''}`;
+const PUBLIC_SPACE = [
+  [/espaces verts/i, (n2) => (/entretien/i.test(n2) ? 'Tree and planting upkeep' : 'New planting')],
+  [/voie nouvelle/i, () => 'New road'], [/voirie|DVL|am[ée]nagement/i, (n2) => (/entretien/i.test(n2) ? 'Road maintenance' : 'Road layout changes')],
+  [/mobilier/i, () => 'Street furniture'], [/sondage/i, () => 'Trial holes'],
+];
+const bare = (x) => x.replace(/^(a|the) /, '');
+const cap = (x) => x[0].toUpperCase() + x.slice(1);
+function nature(n1 = '', n2 = '') {
+  const utility = UTILITIES.find(([re]) => re.test(n1))?.[1];
+  if (utility) {
+    const part = /branchement/i.test(n1) ? 'connection' : /mobilier/i.test(n1) ? 'furniture' : 'network';
+    const x = utility[part] || utility.network;
+    return (ACTIONS.find(([re]) => re.test(n2))?.[1] || ((y) => `Works on ${y}`))(x);
+  }
+  if (/immeuble/i.test(n1)) {
+    const what = /[ée]chafaudage/i.test(n2) ? 'Scaffolding' : 'Site fence';
+    return `${what} for ${/d[ée]molition/i.test(n1) ? 'a demolition' : 'building works'}`;
+  }
+  if (/voies ferr[ée]es/i.test(n1)) return 'Tram track works';
+  if (/espace public/i.test(n1)) return PUBLIC_SPACE.find(([re]) => re.test(n2))?.[1](n2) || 'Street works';
+  return 'Roadworks';
 }
 
 // Passenger messages carry the day's biggest news (tram suspensions) as free French text. Read the
@@ -164,6 +187,15 @@ function readMessage(text) {
 // ---------- dates (the network runs on Paris time, wherever the viewer is) ----------
 
 export const parisDate = (d) => new Date(d).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+// Multi-phase permits list each phase's dates joined by "#"; the desk takes the whole span.
+function permitSpan(debut, fin) {
+  const days = (v) => String(v || '').split('#').map((x) => x.trim().slice(0, 10)).filter((x) => DAY.test(x)).sort();
+  const s = days(debut), e = days(fin);
+  return s.length && e.length && s[0] <= e.at(-1) ? [s[0], e.at(-1)] : null;
+}
+// A detour that ends in the small hours stops before that day's service, so it covers the day before.
+const endDay = (iso) => parisDate(new Date(new Date(iso) - 5 * 36e5));
 const addDays = (iso, n) => { const t = new Date(`${iso}T12:00:00Z`); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
 export const daysBetween = (a, b) => Math.round((new Date(`${b}T12:00:00Z`) - new Date(`${a}T12:00:00Z`)) / 864e5);
 export function dayLabel(iso, now = new Date()) {
@@ -217,19 +249,17 @@ export const lineLabel = (ids) => {
 // ---------- the desk ----------
 
 const HORIZON_DAYS = 28;
-// Older changes were handled when they started; the desk is for what is new or coming.
-const RECENT_DAYS = 14;
-const PLANNED_HOURS = 24;
-const NEAR_METRES = 800;
+// A detour serves a works site when it leaves and rejoins the route on either side of it, or, when
+// its end stops are unknown, passes within this distance of it.
+const MATCH_METRES = 150;
 
 // Turns the three published feeds into the list of disruptions a change coordinator has to handle:
-// roadworks permits on a bus route that are in force or start within four weeks, diversions the
-// operator planned for a day or more, and tram suspensions announced to passengers.
+// roadworks permits on a bus route that are in force or start within four weeks. Published detours
+// and passenger messages are kept as the evidence the checks compare against.
 export function buildDesk(feeds, now) {
   const { lines, stops, linesThroughStop } = net();
   const today = parisDate(now);
   const horizon = addDays(today, HORIZON_DAYS);
-  const since = addDays(today, -RECENT_DAYS);
   const items = [];
 
   // Every published diversion still running, short ones included: they are evidence for checks.
@@ -250,10 +280,12 @@ export function buildDesk(feeds, now) {
     const [fromName, toName] = String(d.libelle || '').replace(/^D[ée]viation\s*/i, '').split(/\s*<=>\s*/);
     diversions.push({
       id: `dev-${d.gid}`, gid: d.gid, ref: d.ident, stopMoved: d.type === 'REPORT_ARRET',
-      title: toName ? `${fromName} → ${toName}` : fromName || 'Diversion',
+      title: toName ? `${fromName} → ${toName}` : fromName || 'Detour',
       direction: d.sens || 'ALLER_RETOUR', starts: d.debut, ends: d.fin, days: d.jour_appli,
       hours: (new Date(d.fin) - new Date(d.debut)) / 36e5,
       lines: ids, shape, geo: parts.map((l) => thin(l, 10)),
+      // Where the detour leaves and rejoins the route, in metres.
+      from: from ? toXY([from.lon, from.lat]).map(Math.round) : null, to: to ? toXY([to.lon, to.lat]).map(Math.round) : null,
     });
   }
 
@@ -273,8 +305,9 @@ export function buildDesk(feeds, now) {
 
   // 1. Roadworks permits on a bus route, in force or starting within the horizon.
   for (const w of feeds.ci_chantier || []) {
-    if (!w.geo_shape || !w.date_debut || !w.date_fin) continue;
-    if (w.date_fin < today || w.date_debut < since || w.date_debut > horizon) continue;
+    const when = w.geo_shape && permitSpan(w.date_debut, w.date_fin);
+    // Everything still in force counts, however long ago it started: its detour can still run out.
+    if (!when || when[1] < today || when[0] > horizon) continue;
     const parts = linesOf(w.geo_shape);
     const shape = prepare(parts);
     const ids = [...lines.values()].filter((l) => l.mode === 'BUS' && alongRoute(shape, l.shape, 10)).map((l) => l.id);
@@ -282,26 +315,13 @@ export function buildDesk(feeds, now) {
     items.push({
       id: `works-${w.gid}`, kind: 'works', ref: w.ident, source: 'Roadworks permits',
       title: place(w.localisation), what: nature(w.alias_nature_n1, w.alias_nature_n2),
-      starts: w.date_debut, ends: w.date_fin, lines: ids, stops: stopsNear(shape, ids), shape,
+      starts: when[0], ends: when[1], lines: ids, stops: stopsNear(shape, ids), shape,
       geo: parts.map((l) => (l.length === 1 ? [[+l[0][1].toFixed(5), +l[0][0].toFixed(5)]] : thin(l, 5))),
     });
   }
 
-  // 2. Diversions the operator planned for a day or more.
-  for (const d of diversions) {
-    if (d.hours < PLANNED_HOURS || !d.lines.length || parisDate(d.starts) < since || parisDate(d.starts) > horizon) continue;
-    items.push({
-      id: d.id, kind: 'diversion', ref: d.ref, source: 'Network diversions',
-      title: d.title, what: d.stopMoved ? 'Stop moved' : `Diversion, ${DIRECTION[d.direction]?.toLowerCase() || 'both directions'}`,
-      starts: parisDate(d.starts), ends: parisDate(d.ends), lines: d.lines, stops: stopsNear(d.shape, d.lines, 30),
-      shape: d.shape, geo: d.geo, direction: d.direction,
-    });
-  }
-
-  // 3. Messages shown to passengers, by line. A tram suspension is also a disruption in its own right.
+  // 2. Messages shown to passengers, by line.
   const messages = new Map();
-  const trams = new Map();
-  const tramId = (letter) => [...lines.values()].find((l) => l.mode === 'TRAM' && l.short === letter)?.id;
   for (const m of feeds.sv_messa_a || []) {
     const lineId = String(m.rs_sv_ligne_a);
     if (!m.message || !lines.has(lineId)) continue;
@@ -310,47 +330,6 @@ export function buildDesk(feeds, now) {
     const list = messages.get(lineId) || [];
     if (!list.some((x) => x.text === text)) list.push({ headline: read.headline, severity: read.severity, text });
     messages.set(lineId, list);
-    if (read.severity >= 3) for (const letter of read.trams || []) {
-      const id = tramId(letter);
-      if (!id) continue;
-      const t = trams.get(letter) || { id, read, texts: new Set(), stretches: [] };
-      t.texts.add(text);
-      t.stretches.push(...(read.stretches || []).filter((x) => x.tram === letter));
-      trams.set(letter, t);
-    }
-  }
-  for (const [letter, t] of trams) {
-    const seen = new Set();
-    const ends = t.stretches.filter((x) => { const k = x.ends.join(); return !seen.has(k) && seen.add(k); });
-    const geo = ends.flatMap((x) => stretch(t.id, x.ends));
-    const parts = geo.map((g) => g.map(([lat, lon]) => [lon, lat]));
-    const shape = parts.length ? prepare(parts) : null;
-    items.push({
-      id: `tram-${letter}`, kind: 'tram', ref: `Tram ${letter}`, source: 'Passenger information',
-      title: t.read.headline, what: 'Tram service suspended', starts: today, ends: null, lines: [t.id],
-      stops: shape ? stopsNear(shape, [t.id], 30) : [], shape, geo,
-      quote: [...t.texts].sort((a, b) => b.length - a.length)[0],
-    });
-  }
-
-  // The stretch of a line between two named stops, for "Tram B interrompu X <> Y".
-  function stretch(lineId, names) {
-    const line = lines.get(lineId);
-    if (!line || names.length < 2) return [];
-    const find = (name) => {
-      const n = norm(name).replace(/^bre /, 'barriere ');
-      const cands = [...stops.values()].filter((s) => norm(s.name) === n).concat([...stops.values()].filter((s) => norm(s.name).startsWith(n)));
-      return cands.find((s) => { const [x, y] = toXY([s.lon, s.lat]); return distPointShape(x, y, line.shape) <= 35; });
-    };
-    const a = find(names[0]), b = find(names[1]);
-    if (!a || !b) return [];
-    let best = null;
-    for (const part of line.geo) {
-      const near = (s) => part.reduce((acc, [lat, lon], i) => { const d = Math.hypot((lon - s.lon) * KX, (lat - s.lat) * KY); return d < acc.d ? { i, d } : acc; }, { i: 0, d: Infinity });
-      const ia = near(a), ib = near(b);
-      if (!best || ia.d + ib.d < best.d) best = { part, from: Math.min(ia.i, ib.i), to: Math.max(ia.i, ib.i), d: ia.d + ib.d };
-    }
-    return best && best.d < 120 && best.to > best.from ? [best.part.slice(best.from, best.to + 1)] : [];
   }
 
   for (const it of items) it.status = it.starts <= today ? 'in-force' : 'upcoming';
@@ -369,18 +348,42 @@ export const IMPACTS = {
 
 // What a change request starts from before anyone has assessed it.
 export function defaultPlan(item) {
-  return {
-    item: item.id, impact: item.kind === 'tram' ? 'stops' : item.kind === 'diversion' ? 'closed' : null,
-    lines: item.lines, starts: item.starts, ends: item.ends, stops: item.stops.map((s) => s.id),
-    // A one-way diversion is often a one-way street; the coordinator says otherwise if not.
-    directions: item.kind === 'diversion' && item.direction !== 'ALLER_RETOUR' ? 'one' : 'both',
-  };
+  return { item: item.id, impact: null, lines: item.lines, starts: item.starts, ends: item.ends, stops: item.stops.map((x) => x.id), directions: 'both' };
+}
+
+// Does a published detour go round this works site? It must leave and rejoin the route on either side
+// of it (the site lies inside the ellipse between its two end stops), or, without known end stops,
+// run right past it.
+function serves(d, shape) {
+  if (d.from && d.to) {
+    const reach = 1.2 * Math.hypot(d.to[0] - d.from[0], d.to[1] - d.from[1]) + 150;
+    for (const p of shape.parts) for (const [x, y] of p) if (Math.hypot(x - d.from[0], y - d.from[1]) + Math.hypot(x - d.to[0], y - d.to[1]) <= reach) return true;
+    return false;
+  }
+  return distShapes(shape, d.shape) <= MATCH_METRES;
+}
+
+// The published detours for each bus line of a works site, and the stretch of days each line is
+// covered without a break, counted from the later of the works' start and today. The checks, the
+// card's timeline and the Jira description all read this, so they give the same dates.
+export function coverage(item, desk, plan = defaultPlan(item)) {
+  const from = [plan.starts || item.starts, desk.today].sort()[1];
+  const buses = (plan.lines || item.lines).filter((id) => lineInfo(id)?.mode === 'BUS');
+  const found = new Map();
+  const span = new Map();
+  for (const id of buses) {
+    const ds = item.shape ? desk.diversions.filter((d) => d.lines.includes(id) && endDay(d.ends) >= from && serves(d, item.shape)) : [];
+    found.set(id, ds);
+    if (!ds.length) continue;
+    const runs = ds.map((d) => [parisDate(d.starts), endDay(d.ends)]).sort((x, y) => x[0].localeCompare(y[0]));
+    let until = runs[0][1];
+    for (const [st, en] of runs.slice(1)) if (st <= addDays(until, 1) && en > until) until = en;
+    span.set(id, { start: runs[0][0], until });
+  }
+  return { from, buses, found, span };
 }
 
 const NOTICE = /devi|report|interromp|non desservi|travaux|tvx|arret provisoire|perturb|ne dessert|supprim/;
-
-// [[id, end], ...] -> [[end, [ids]], ...]
-const groupBy = (pairs) => [...pairs.reduce((m, [id, k]) => m.set(k, [...(m.get(k) || []), id]), new Map())];
 
 // Each check is pass, fail or pending (not due yet). Published information is due the day before the
 // change starts, so an upcoming change is not shown as failing until it is late.
@@ -390,28 +393,34 @@ export function runChecks(plan, item, desk) {
   if (plan.impact === 'none') return { state: 'no-impact', checks, failing: 0 };
   const due = plan.starts ? addDays(plan.starts, -1) : desk.today;
   const late = desk.today >= due;
-  const add = (id, label, ok, evidence) => checks.push({ id, label, state: ok ? 'pass' : late ? 'fail' : 'pending', evidence, due });
-  const buses = plan.lines.filter((id) => lineInfo(id)?.mode === 'BUS');
-
-  if ((plan.impact === 'closed' || plan.impact === 'stops') && buses.length) {
-    const found = new Map(buses.map((id) => [id, desk.diversions.filter((d) => d.lines.includes(id) && (d.id === item.id || (item.shape && distShapes(item.shape, d.shape) <= NEAR_METRES)))]));
+  const add = (id, label, ok, evidence, data = {}) => checks.push({ id, label, state: ok ? 'pass' : late ? 'fail' : 'pending', evidence, due, data });
+  if (plan.impact === 'closed' || plan.impact === 'stops') {
+    const { from, buses, found, span } = coverage(item, desk, plan);
     const missing = buses.filter((id) => !found.get(id).length);
-    add('diversion', 'Diversion published', !missing.length, missing.length
-      ? `No diversion published for ${lineLabel(missing)} within ${NEAR_METRES} m of the works.`
-      : `Published for ${lineLabel(buses)}: ${[...new Set(buses.map((id) => found.get(id)[0].title))].slice(0, 3).join('; ')}.`);
+    if (buses.length) add('diversion', 'Detour published', !missing.length, missing.length
+      ? `No published detour goes round the works on ${lineLabel(missing)}.`
+      : `Published for ${lineLabel(buses)}: ${[...new Set(buses.map((id) => found.get(id)[0].title))].slice(0, 3).join('; ')}.`, { missing, found: buses.length - missing.length });
 
     const covered = buses.filter((id) => found.get(id).length);
     if (covered.length && plan.directions === 'both') {
-      const oneWay = covered.filter((id) => { const s = new Set(found.get(id).map((d) => d.direction)); return !s.has('ALLER_RETOUR') && !(s.has('ALLER') && s.has('RETOUR')); });
-      add('directions', 'Both directions covered', !oneWay.length, oneWay.length
+      const oneWay = covered.filter((id) => { const k = new Set(found.get(id).map((d) => d.direction)); return !k.has('ALLER_RETOUR') && !(k.has('ALLER') && k.has('RETOUR')); });
+      add('directions', 'Detour runs both ways', !oneWay.length, oneWay.length
         ? `Published one way only on ${lineLabel(oneWay)}.`
-        : 'Every diverted line has a diversion in both directions.');
+        : 'Every diverted line has a detour in both directions.', { lines: oneWay });
     }
     if (covered.length && plan.ends) {
-      const short = covered.map((id) => [id, found.get(id).reduce((m, d) => (parisDate(d.ends) > m ? parisDate(d.ends) : m), '')]).filter(([, end]) => end < plan.ends);
-      add('dates', 'Diversion lasts as long as the works', !short.length, short.length
-        ? `${groupBy(short).map(([end, ids]) => `On ${lineLabel(ids)} the diversion ends ${dayLabel(end, desk.now)}`).join('; ')}. The change runs until ${dayLabel(plan.ends, desk.now)}.`
-        : `Published diversions run until ${dayLabel(plan.ends, desk.now)} or later.`);
+      const late = covered.filter((id) => span.get(id).start > from);
+      const short = covered.filter((id) => span.get(id).until < plan.ends);
+      const ends = short.map((id) => span.get(id).until).sort()[0] || null;
+      const starts = late.map((id) => span.get(id).start).sort().at(-1) || null;
+      const said = [
+        ...(late.length ? [`On ${lineLabel(late)} the detour only starts ${dayLabel(starts, desk.now)}`] : []),
+        ...(short.length ? [`On ${lineLabel(short)} the detour ends ${dayLabel(ends, desk.now)}`] : []),
+      ];
+      add('dates', 'Detour covers the whole works', !said.length, said.length
+        ? `${said.join('; ')}. The works run until ${dayLabel(plan.ends, desk.now)}.`
+        : `Published detours run from ${dayLabel(from, desk.now)} to ${dayLabel(plan.ends, desk.now)} or longer.`,
+      { ends, starts, lines: [...new Set([...late, ...short])], gapDays: (ends ? daysBetween(ends, plan.ends) : 0) + (starts ? daysBetween(from, starts) : 0) });
     }
   }
 
@@ -422,12 +431,116 @@ export function runChecks(plan, item, desk) {
   const told = (id) => (desk.messages.get(id) || []).find((m) => { const t = norm(m.text); return NOTICE.test(t) || stopNames.some((s) => s.length > 3 && t.includes(s)); });
   const silent = trams.filter((id) => !told(id));
   if (trams.length) add('notice', 'Passengers told at stops', !silent.length, silent.length
-    ? `No passenger message on ${lineLabel(silent)} mentions a diversion, works or a stop not served.`
-    : trams.map((id) => `Line ${lineInfo(id)?.short}: "${told(id).text.slice(0, 90)}${told(id).text.length > 90 ? '…' : ''}"`).join(' '));
+    ? `No passenger message on ${lineLabel(silent)} mentions a detour, works or a stop not served.`
+    : trams.map((id) => `Line ${lineInfo(id)?.short}: "${told(id).text.slice(0, 90)}${told(id).text.length > 90 ? '…' : ''}"`).join(' '), { lines: silent });
 
   const failing = checks.filter((c) => c.state === 'fail').length;
   const pending = checks.filter((c) => c.state === 'pending').length;
   return { state: failing ? 'failing' : pending ? 'pending' : 'ready', checks, failing, pending, due };
+}
+
+// ---------- the outlook: what is going on, in words someone outside bus planning can follow ----------
+
+export const LIGHTS = { red: 'Problem', amber: 'To check', green: 'Covered' };
+
+const andList = (xs) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
+function linesSaid(ids) {
+  const ls = ids.map(lineInfo).filter(Boolean);
+  const said = [];
+  const buses = ls.filter((l) => l.mode !== 'TRAM').map((l) => l.short);
+  const trams = ls.filter((l) => l.mode === 'TRAM').map((l) => l.short);
+  if (buses.length) said.push(`${buses.length === 1 ? 'bus' : 'buses'} ${andList(buses)}`);
+  if (trams.length) said.push(`${trams.length === 1 ? 'tram' : 'trams'} ${andList(trams)}`);
+  return andList(said) || 'no line';
+}
+const day = (iso, now) => {
+  const t = new Date(`${iso}T12:00:00Z`);
+  const year = iso.slice(0, 4) !== parisDate(now).slice(0, 4) ? 'numeric' : undefined;
+  return t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year, timeZone: 'Europe/Paris' });
+};
+// Always in days, so the card, the timeline and Rovo give the same number.
+const days = (n) => `${n} ${n === 1 ? 'day' : 'days'}`;
+
+// The disruption itself, in one sentence.
+function storyOf(item, desk) {
+  const until = item.ends ? ` to ${day(item.ends, desk.now)}` : '';
+  return `${item.what} at ${item.title}, from ${day(item.starts, desk.now)}${until}, on the route of ${linesSaid(item.lines)}.`;
+}
+
+// Each gap the go-live check found, as a sentence and the step that closes it.
+function gapOf(c, plan, desk) {
+  if (c.id === 'diversion') return c.data.found
+    ? [`No detour goes round the works for ${linesSaid(c.data.missing)}.`, 'Check whether those lines can still get through. If not, publish a detour for them.']
+    : ['No published detour goes round the works.', 'Check whether buses can still get through. If not, publish a detour.'];
+  if (c.id === 'directions') return [`The detour for ${linesSaid(c.data.lines)} runs one way only.`, 'Publish a detour for the other direction, or confirm only one direction is affected.'];
+  if (c.id === 'dates') {
+    const { starts, ends, gapDays } = c.data;
+    const said = starts && ends ? `The detour runs ${day(starts, desk.now)} to ${day(ends, desk.now)}`
+      : starts ? `The detour only starts ${day(starts, desk.now)}` : `The detour ends ${day(ends, desk.now)}`;
+    return [`${said}: ${days(gapDays)} of works with no detour.`, 'Extend the detour to cover the works, or confirm the road reopens sooner.'];
+  }
+  return [`Passengers on ${linesSaid(c.data.lines)} have not been told at the stops.`, 'Put a notice up at the stops.'];
+}
+
+// The works and the published detour as date ranges, so the card can draw the gap between them
+// instead of describing it. The works bar is the permit; the plan's dates show only when they differ.
+// The detour bar runs until the first line runs out, the same rule as the "covers the whole works" check.
+export function timelineOf(item, desk, plan = null, result = null) {
+  const p = plan || defaultPlan(item);
+  const { span } = coverage(item, desk, p);
+  const spans = [...span.values()];
+  const detour = spans.length ? { from: spans.map((x) => x.start).sort()[0], to: spans.map((x) => x.until).sort()[0] } : null;
+  const dates = result?.checks?.find((c) => c.id === 'dates');
+  const differs = p.starts !== item.starts || p.ends !== item.ends;
+  return {
+    kind: item.kind, from: item.starts, to: item.ends, today: desk.today,
+    plan: differs ? { from: p.starts, to: p.ends } : null,
+    detour,
+    // A gap only matters if buses cannot get through.
+    gapDays: dates && dates.state !== 'pass' && !['narrowed', 'none'].includes(plan?.impact) ? dates.data.gapDays : 0,
+  };
+}
+
+// A traffic light with a short label, a sentence on what is happening, the problem if there is one,
+// and the next step. Before anyone has assessed a disruption it is judged on the worst case (buses
+// cannot get through): a published detour that falls short is a problem, while no detour at all may
+// only mean the road stays open, so that is something to check.
+export function outlook(item, desk, plan = null, r = null) {
+  const story = storyOf(item, desk);
+  const assessed = !!plan?.impact;
+  const worst = assessed ? plan : { ...defaultPlan(item), ...(plan || {}), impact: 'closed' };
+  const result = assessed && r ? r : runChecks(worst, item, desk);
+  const ORDER = ['diversion', 'dates', 'directions', 'notice'];
+  const gaps = result.checks.filter((c) => c.state !== 'pass').sort((a, b) => ORDER.indexOf(a.id) - ORDER.indexOf(b.id));
+  const [problem, next] = gaps.length ? gapOf(gaps[0], worst, desk) : [null, null];
+  const more = gaps.slice(1).map((c) => gapOf(c, worst, desk)[0]);
+  const timeline = timelineOf(item, desk, plan, result);
+  // Unassessed, only a published detour that falls short is a problem; a missing one is to check.
+  // A detour over less than a third of a long permit is likely for one phase of it, so that is to
+  // check too: the permit does not say when each phase closes the road.
+  const t = timeline.detour;
+  const overlap = t ? daysBetween([t.from, item.starts].sort()[1], [t.to, item.ends].sort()[0]) + 1 : 0;
+  const phase = overlap * 3 < daysBetween(item.starts, item.ends) + 1;
+  // One-way detours are common on one-way streets, so a single direction is to check as well.
+  const short = gaps.filter((c) => c.id === 'dates' && !phase);
+  const out = (light, label, p, n) => ({ light, label, story, problem: p, more: p === problem ? more : [], next: n, timeline, gaps: gaps.map((c) => c.id) });
+
+  if (assessed) {
+    if (plan.impact === 'none') return plan.signoffs?.ops
+      ? out('green', 'No effect', 'Operations confirmed buses get through.', null)
+      : out('amber', 'Confirm', 'Marked as no effect on buses.', 'Operations signs off to confirm.');
+    if (result.failing) return out('red', gaps[0]?.id === 'diversion' ? 'No detour' : 'Falls short', problem, next);
+    if (gaps.length) return out('amber', `Due ${day(result.due, desk.now)}`, problem, next);
+    if (r?.ready) return out('green', 'Ready', 'Everything is published and every team has signed off.', null);
+    const left = r ? r.roles - r.signed : 4;
+    return out('amber', 'Sign-offs', 'What is published matches the plan.', `Waiting for ${left} of ${r?.roles ?? 4} teams to sign off.`);
+  }
+  if (short.length) {
+    const [p, n] = gapOf(short[0], worst, desk);
+    return { ...out('red', 'Falls short', p, n), more: gaps.filter((c) => c !== short[0]).map((c) => gapOf(c, worst, desk)[0]) };
+  }
+  if (gaps.length) return out('amber', gaps[0].id === 'diversion' && !gaps[0].data.found ? 'No detour' : 'Partly covered', problem, next);
+  return out('green', 'Covered', 'A detour is published for the whole works.', null);
 }
 
 // ---------- shapes for the page and for Rovo ----------
@@ -437,11 +550,14 @@ export function summary(item, desk) {
     id: item.id, kind: item.kind, title: item.title, what: item.what, status: item.status,
     starts: item.starts, ends: item.ends, startsLabel: dayLabel(item.starts, desk.now), endsLabel: dayLabel(item.ends, desk.now),
     lines: item.lines.map(lineInfo).filter(Boolean), source: item.source, ref: item.ref,
+    // The desk draws every disruption at once on its map.
+    geo: item.geo || [],
   };
 }
 
 export function detail(item, desk) {
-  const nearby = item.shape ? desk.diversions.filter((d) => d.id !== item.id && d.lines.some((id) => item.lines.includes(id)) && distShapes(item.shape, d.shape) <= NEAR_METRES) : [];
+  const { found } = coverage(item, desk);
+  const nearby = [...new Set([...found.values()].flat())];
   return {
     ...summary(item, desk),
     stops: item.stops, geo: item.geo, quote: item.quote || null,
