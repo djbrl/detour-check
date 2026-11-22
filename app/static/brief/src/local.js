@@ -51,6 +51,8 @@ const handlers = {
     }).sort((a, b) => RANK[a.outlook.light] - RANK[b.outlook.light] || a.starts.localeCompare(b.starts)),
   }),
   getItem: ({ id }) => { const v = state.crs[id] ? view(state.crs[id].key) : null; return { ...detail(desk.byId.get(id), desk), outlook: v?.outlook || outlook(desk.byId.get(id), desk), changeRequest: v }; },
+  getSetup: () => ({ admin: true, project: state.settings.project || null, teamGroups: [], space: state.settings.project ? { found: true, name: 'Network Changes', serviceSpace: true, canCreate: true, issueType: 'Change', changeFields: ['Planned start', 'Planned end'], allFields: 9, gate: { workflow: 'Change workflow', guarded: ['Standard change', 'Emergency override', 'Approve', 'Implement'], missing: [] } } : null }),
+  setUp: (p) => { const created = !p?.project && !state.settings.project; state.settings.project = p?.project || state.settings.project || 'ROAD'; return { project: state.settings.project, created, gate: { guarded: ['Standard change'], missing: [] } }; },
   saveSettings: (p) => Object.assign(state.settings, Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined))),
   createChangeRequest: ({ id }) => {
     const key = `NET-${++state.n}`;
@@ -70,8 +72,9 @@ const handlers = {
   savePlan: ({ impact, directions, ends }) => {
     const plan = state.plans[panelKey()];
     if (impact !== undefined) setImpact(plan, impact);
-    if (directions !== undefined) { need(['both', 'one'].includes(directions), 'Directions is both or one'); plan.directions = directions; }
-    if (ends !== undefined) { need(/^\d{4}-\d{2}-\d{2}$/.test(ends), 'End date is YYYY-MM-DD'); plan.ends = ends; }
+    // As in the app: changing what the plan is checked against clears its sign-offs.
+    if (directions !== undefined) { need(['both', 'one'].includes(directions), 'Directions is both or one'); if (plan.directions !== directions) plan.signoffs = {}; plan.directions = directions; }
+    if (ends !== undefined) { need(/^\d{4}-\d{2}-\d{2}$/.test(ends), 'End date is YYYY-MM-DD'); if (plan.ends !== ends) plan.signoffs = {}; plan.ends = ends; }
     return view(panelKey());
   },
   signOff: ({ role, undo }) => { sign(state.plans[panelKey()], role, undo); return view(panelKey()); },

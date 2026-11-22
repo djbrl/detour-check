@@ -5,6 +5,7 @@ modules:
       resolver:
         function: resolver
       title: Detour Check
+      icon: resource:desk;icon.svg
   jira:issuePanel:
     - key: change-desk-panel
       resource: desk
@@ -15,7 +16,7 @@ modules:
       displayConditions:
         jiraExpression: "issue.properties['detour-check'] != null"
   rovo:agent:
-    - key: change-desk-agent
+    - key: detour-check-agent
       name: Detour Check
       description: Plans roadworks on bus routes, drafts impact
         assessments and passenger notices, and checks that what was approved is
@@ -25,7 +26,7 @@ modules:
       conversationStarters:
         - What needs my attention this week?
         - Which roadworks have a detour that falls short?
-        - Handle the roadworks at 36 Quai de Paludate
+        - Handle the roadworks at 177 Cours de la Marne
       actions:
         - list-disruptions
         - get-disruption
@@ -33,7 +34,7 @@ modules:
         - check-change-request
         - record-assessment
   rovo:mcp:
-    - key: change-desk-mcp
+    - key: detour-check-mcp
       name: Detour Check
       tools:
         - list-disruptions
@@ -117,9 +118,9 @@ modules:
           title: Impact
           type: string
           required: false
-          description: One of closed (road closed, buses divert), stops (stops not
-            served), narrowed (lane narrowed, delays only), none (no service
-            impact).
+          description: One of closed (road closed, buses divert) or stops (stops not
+            served). Lowering a plan to narrowed or none takes a person and a
+            reason, so this action refuses them.
         assessment:
           title: Impact assessment
           type: string
@@ -130,6 +131,34 @@ modules:
           type: string
           required: false
           description: The draft passenger notice, French then English.
+  consumer:
+    - key: live-desk-consumer
+      queue: live-desk
+      function: fn-live
+  trigger:
+    - key: issue-deleted
+      function: fn-deleted
+      events:
+        - avi:jira:deleted:issue
+  jira:entityProperty:
+    - key: detour-check-index
+      propertyKey: detour-check
+      entityType: issue
+      values:
+        - path: status
+          type: string
+          searchAlias: detourCheck
+        - path: signed
+          type: number
+          searchAlias: detourCheckSignoffs
+  jira:workflowValidator:
+    - key: detour-check-ready
+      name: Detour Check is ready
+      description: Holds a change until its published detours match the plan and every team has signed off.
+      function: fn-go-live
+      projectTypes:
+        - company-managed
+        - team-managed
   scheduledTrigger:
     - key: go-live-check
       function: fn-hourly
@@ -150,6 +179,13 @@ modules:
     - key: fn-hourly
       handler: index.hourly
       timeoutSeconds: 120
+    - key: fn-deleted
+      handler: index.issueDeleted
+    - key: fn-go-live
+      handler: index.goLive
+    - key: fn-live
+      handler: live.handler
+      timeoutSeconds: 300
 resources:
   - key: desk
     path: static/brief/build
@@ -161,6 +197,7 @@ permissions:
     - read:jira-work
     - write:jira-work
     - read:jira-user
+    - manage:jira-configuration
   content:
     styles:
       - unsafe-inline

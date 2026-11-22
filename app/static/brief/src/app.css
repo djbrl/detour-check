@@ -197,6 +197,8 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
 .sw.route { border-color: #505f79; }
 .sw.works { border-color: #c9372c; border-top-width: 6px; }
 .sw.detour { border-top: 4px dashed #1f845a; }
+.pin-label { padding: 2px 6px; border: 0; border-radius: 4px; background: #1f845a; color: #fff; font: 600 11px/16px inherit; box-shadow: 0 1px 2px #091e4240; }
+.pin-label::before { border-top-color: #1f845a; }
 .sw.stop { width: 10px; height: 10px; border: 2px solid #172b4d; border-radius: 50%; background: #fff; }
 .panel-top.red { background: var(--danger-bg); }
 .panel-top.amber { background: var(--warn-bg); }
@@ -252,22 +254,76 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
 
 /* ---------- welcome screen ---------- */
 .tutorial { position: fixed; inset: 0; z-index: 4000; display: grid; place-items: center; padding: 16px; background: #091e4280; }
-.tut { width: min(440px, 100%); background: var(--raised); border-radius: 12px; padding: 24px; text-align: center; box-shadow: var(--ds-shadow-overlay, 0 8px 12px #091e4226, 0 0 1px #091e424f); }
-.tut .art { color: var(--muted); background: var(--sunken); border-radius: 8px; padding: 12px; }
-.tut .art svg { width: 100%; height: auto; display: block; }
-.tut h2 { margin: 16px 0 4px; font-size: 20px; }
-.tut p { margin: 0; color: var(--muted); }
+.tut { width: min(460px, 100%); max-height: 100%; overflow: auto; background: var(--raised); border-radius: 12px; padding: 20px; text-align: center; box-shadow: var(--ds-shadow-overlay, 0 8px 12px #091e4226, 0 0 1px #091e424f); }
+/* The picture sits on a faint dot grid, like a map with nothing drawn on it yet. */
+.tut .art { margin: 0; color: var(--muted); border-radius: 8px; overflow: hidden; background: radial-gradient(var(--line) 1px, transparent 1.2px) 0 0 / 14px 14px, var(--sunken); }
+.tut .art svg { width: 100%; height: auto; display: block; aspect-ratio: 320 / 150; animation: tut-in .35s ease-out; }
+.tut .art figcaption { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0 8px; padding: 6px 10px; font-size: 11px; line-height: 16px; color: var(--faint); background: var(--sunken); text-align: left; }
+.tut .art a, .sources a { color: var(--link); text-decoration: none; }
+.tut .art a:hover, .sources a:hover { text-decoration: underline; }
+.tut h2 { margin: 14px 0 4px; font-size: 20px; line-height: 26px; text-wrap: balance; }
+.tut p { margin: 0 auto; max-width: 42ch; color: var(--muted); text-wrap: pretty; }
+.tut .num { font-weight: 700; }
+.tut .num.ok { color: var(--ok); }
+.tut .num.gap { color: var(--danger); }
+.tut .num.check { color: var(--warn); }
 .tut .dots { display: flex; justify-content: center; gap: 6px; margin-top: 14px; }
-.tut .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--neutral-hover); }
-.tut .dots i.on { background: var(--brand); }
+.tut .dots i { width: 6px; height: 6px; border-radius: 3px; background: var(--neutral-hover); transition: width .2s; }
+.tut .dots i.on { width: 18px; background: var(--brand); }
 .tut-actions { display: flex; gap: 8px; margin-top: 20px; }
 .tut-actions span { flex: 1; }
+@keyframes tut-in { from { transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .tut .art svg { animation: none; } }
+
+/* The drawings take their colours from the theme, so they read in light and dark. */
+.tut svg .route { fill: none; stroke: var(--faint); stroke-width: 7; stroke-linecap: round; opacity: .55; }
+.tut svg .route.thin { stroke-width: 5; }
+.tut svg .works, .tut svg .gap { fill: var(--danger-bold); }
+.tut svg .cr { fill: var(--warn-icon); }
+.tut svg .hatch { fill: #fff; }
+.tut svg .works-line { fill: none; stroke: var(--danger-bold); stroke-width: 9; stroke-linecap: round; }
+.tut svg .detour { fill: none; stroke: var(--ok-bold); stroke-width: 4; stroke-dasharray: 7 5; stroke-linecap: round; }
+.tut svg .leg, .tut svg .pole { stroke: var(--muted); stroke-width: 3; stroke-linecap: round; }
+.tut svg .bus, .tut svg .sign, .tut svg .now { fill: var(--brand); }
+.tut svg .win { fill: var(--raised); opacity: .9; }
+.tut svg .wheel { fill: var(--ink); }
+.tut svg .glyph, .tut svg .tick { fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tut svg .tick { stroke-width: 2.6; }
+.tut svg .person { fill: var(--muted); }
+.tut svg .clock { fill: var(--raised); stroke: var(--warn-icon); stroke-width: 2.5; }
+.tut svg .hand { fill: none; stroke: var(--warn-icon); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.tut svg .paper { fill: var(--raised); stroke: var(--line); }
+.tut svg .bar { fill: var(--neutral-hover); }
+.tut svg .key { font-size: 12px; font-weight: 700; fill: var(--muted); }
+.tut svg .small { font-size: 11px; fill: var(--faint); }
+.tut svg .signed, .tut svg .ok { fill: var(--ok-bold); }
+.tut svg .unsigned { fill: none; stroke: var(--ok-bold); stroke-width: 2.5; stroke-dasharray: 4 3; }
+.tut svg .note { fill: var(--info-bg); }
+.tut svg .star { fill: var(--tram); }
+.tut svg .line { fill: var(--info); opacity: .35; }
+.tut svg .sel { fill: var(--selected); }
+.tut svg .check { fill: var(--warn-icon); }
+.tut svg .rule { stroke: var(--line); }
+.tut svg .todo { fill: none; stroke: var(--faint); stroke-width: 2; }
+.tut .dotmap .base { fill: var(--faint); opacity: .55; }
+.tut .dotmap .ok, .tut .dotmap .check, .tut .dotmap .gap { stroke: var(--sunken); stroke-width: 1.5; }
+.tut .dotmap .ring { fill: var(--danger-bold); opacity: .18; }
+
+/* ---------- sources, in the menu ---------- */
+.sources { font-size: 12px; line-height: 18px; color: var(--muted); }
+.sources p { margin: 0; }
+.sources .src-when { color: var(--ink); font-weight: 600; }
+.sources .src-list { margin: 4px 0; padding: 0; list-style: none; }
+.sources .src-foot { color: var(--faint); }
 
 /* ---------- the plan: badges, timeline, steps ---------- */
 .badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 12px; }
 .badge { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px 0 6px; border-radius: 12px; font-size: 13px; font-weight: 700; background: var(--info-bg); color: var(--info); }
 .badge svg { width: 14px; height: 14px; }
 .badge.tram { background: var(--tram-bg); color: var(--tram); }
+button.badge { border: 0; font-family: inherit; cursor: pointer; background: var(--neutral); color: var(--muted); }
+button.badge:hover { background: var(--neutral-hover); }
+button.badge[aria-pressed="true"] { background: var(--info-bg); color: var(--info); box-shadow: inset 0 0 0 2px currentColor; }
 
 .cov { display: grid; gap: 6px; margin: 4px 0 16px; font-size: 13px; }
 .cov-problem { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
@@ -292,6 +348,7 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
 .step-k { font-weight: 600; }
 .step-sub { font-size: 12px; color: var(--muted); }
 .published { margin: 0; color: var(--muted); }
+#live { display: inline-flex; align-items: center; gap: 6px; }
 .ready { margin: 0 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--ok-bg); color: var(--ok); font-weight: 600; font-size: 13px; }
 .confirm { display: flex; gap: 6px; }
 .confirm .btn { min-width: 64px; }
@@ -330,3 +387,8 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
 .link.small { font-size: 12px; }
 .panel-more { display: flex; flex-wrap: wrap; gap: 0 8px; margin: -4px 0 8px 30px; }
 body.in-panel .badges { margin-top: 8px; }
+
+.why { display: grid; gap: 6px; margin-top: 8px; }
+.why label { font-weight: 600; }
+.why textarea { font: inherit; padding: 6px 8px; border: 2px solid var(--line); border-radius: 3px; background: var(--bg); color: inherit; resize: vertical; }
+.why .actions { display: flex; gap: 8px; }

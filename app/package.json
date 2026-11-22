@@ -1,5 +1,5 @@
 {
-  "name": "shift-brief",
+  "name": "detour-check",
   "version": "1.1.21",
   "main": "index.js",
   "license": "MIT",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@forge/api": "^8.5.0",
+    "@forge/events": "^3.0.10",
     "@forge/kvs": "^2.1.2",
     "@forge/resolver": "2.0.2"
   },
@@ -17,6 +18,9 @@
     "build": "node --no-warnings scripts/precompute.mjs && npm --prefix static/brief run build",
     "demo-day": "node scripts/demo-day.mjs && npm run build",
     "snapshot": "npm --prefix static/brief run snapshot",
-    "deploy": "npm run build && forge deploy --non-interactive -e development --no-verify"
+    "deploy": "npm run check && npm run build && forge deploy --non-interactive -e development --no-verify",
+    "test": "node --no-warnings --import ./test/register.mjs --test test/*.test.mjs",
+    "lint": "eslint --ext .js,.mjs src scripts test static/brief/src static/brief/scripts",
+    "check": "npm run lint && npm test"
   }
 }

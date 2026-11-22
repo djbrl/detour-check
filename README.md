@@ -1,55 +1,158 @@
-# Shift Brief (working name)
+# Detour Check
 
-Every bus and tram driver starts their shift with what is different today on their own route, and
-control can see who has read each warning.
+Roadworks close streets that buses run on. A city publishes a detour for some of them, but not always for the
+whole time the works run, in both directions, or at all. Then buses get stuck at the works, and riders wait at
+stops no bus will reach.
 
-## Where things are
+Detour Check is a Jira app that finds those gaps in a city's open data. It turns each fix into a change
+request that every team signs off and Rovo writes up. Jira holds the change back until what is published
+matches the plan.
 
-- `prototype/`: the first local prototype. Plain Node, no dependencies. It reads Bordeaux Métropole's
-  live open data (diversions, roadworks permits, passenger messages, routes; no key needed). Driver
-  duties and read receipts are simulated, because rosters are not public.
-- `app/`: the Forge app, a Jira global page with Custom UI. It is deployed to the development
-  environment and installed on the demo site https://one-atlas-zzyo.atlassian.net (expires
-  2027-02-19).
+Built for Codegeist 2026 on Atlassian Forge. Category: Apps for Specialized Industries.
 
-## Run the prototype
+## Try it in two minutes
 
-```bash
-cd prototype && PORT=4310 node server.mjs
-```
+1. Install the app on your Jira site (install link: to come with the production release).
+2. Open **Apps → Detour Check**. The welcome tour sets the scene in five steps.
+3. Click **Set up**. Detour Check creates a Jira Service Management space, Roadworks Changes, and adds
+   its go-live check to the space's change workflow. Nothing to configure by hand. (An admin can pick a
+   space they already have instead; any space works.)
+4. Open **177 Cours de la Marne**. The published detours for its five bus lines end by 27 November, but the
+   works run until 4 December: seven days with no detour.
+5. Click **Yes** to confirm the published plan. Detour Check opens a change request in your space. In a
+   Jira Service Management space, it is a Change with the dates, risk, impact and implementation plan
+   filled in; in any other space, it is a Task.
+6. Sign off for each team. Open the work item to see the same plan in its Detour Check panel, each sign-off
+   as an internal note, and the go-live checks.
+7. Ask Rovo: **Handle the roadworks at 177 Cours de la Marne**. The Detour Check agent writes the impact
+   assessment and a passenger notice in French and English, and records them on the change request.
 
-Then open http://localhost:4310.
+The app opens on a **demo day**: Bordeaux's feeds as they were published on 22 November 2026, frozen so that
+what you see matches the video. Switch to live data from the ••• menu.
 
-## Forge setup
+## What it does
 
-1. Create an Atlassian API token at https://id.atlassian.com/manage-profile/security/api-tokens.
-2. `forge login` with your Atlassian email and that token.
-3. `forge site provision` creates a free 90-day development site with Jira, Confluence, Jira Service
-   Management, Rovo and sample data.
-4. `forge create` in `app/`, then `forge deploy` and `forge install --demo-site`.
+- **Checks every roadworks site against the published detours.** For each site on a bus route, it checks:
+  - that a detour leaves and rejoins the route on either side of the works;
+  - that it runs in both directions;
+  - that it runs for the whole time the works do.
+  The list puts the problems first, and the map draws one line at a time with the detour's start and end.
+- **Turns the fix into a change request.** It fills in Jira Service Management's own fields: planned start and
+  end, change type, risk and impact by the number of lines, implementation, backout and test plans. Each of
+  four teams signs off: Operations, Scheduling, Passenger information and Drivers. Changing the plan clears
+  the sign-offs and says so on the work item. A plan can say the works run longer than the permit, never
+  shorter, so narrowing it cannot make a check pass. The change's own fields (dates, risk, impact,
+  implementation plan) follow the plan, and every note the app writes is internal.
+- **Keeps checking.** Every hour it compares each plan with what is published, and comments when a plan
+  starts or stops matching.
+  - **Status:** each plan's status is written to the work item, so JQL can find it, for example
+    `detourCheck = failing` or `detourCheck = waiting`. The statuses are `unanswered`, `waiting`,
+    `failing`, `ready`, `gone` (the roadworks left the feed) and `unknown` (the data can't vouch for it
+    right now).
+  - **Go-live gate:** setup adds the **Detour Check is ready** validator to every transition into
+    Awaiting implementation, Implementing and Completed (Standard change, Approve, Emergency override,
+    Implement, Mark as done and the rest), and to finishing in the space's other workflows, so changing
+    the work item's type or space skips nothing. A workflow shared with other spaces is left alone.
+    Jira then won't let the change go live, or be closed as done, until its checks pass and its teams
+    have signed off. A plan can say the works run longer than the permit, never shorter. The validator works it out from the app's own
+    storage and the published data, not from anything on the work item, and says no when it can't be sure.
+  - **Lowering a plan takes two people.** Saying the works have no effect on buses, only slow them, or
+    need a detour one way only asks for a written reason, which goes on the work item. Operations must
+    then sign off as someone other than the person who lowered it. Rovo and MCP clients can't lower a
+    plan at all.
+- **Works with Rovo and other agents.** The Detour Check agent and an MCP server share five actions:
+  - list disruptions;
+  - get one;
+  - create a change request;
+  - check it;
+  - record an assessment.
+  Agents can only write to change requests that Detour Check opened. Every limit is enforced in code, never
+  left to the model.
 
-The Forge documentation server for coding agents is configured in `.mcp.json`.
+### Setting it up on your site
 
-## The Forge app
+- **Space for plans:** **Set up** on the Detour Check page creates one, or a Jira admin picks one. The
+  menu shows what the space offers: its issue type, how many of the change fields it has, who can sign
+  off, and how many transitions the go-live check guards.
+- **Who signs off:** by default, anyone who can edit the change request signs off for any team, and only
+  they can change its plan. To restrict a
+  team, create a group named `detour-check-ops`, `detour-check-scheduling`, `detour-check-passengers` or
+  `detour-check-drivers`; only its members then sign off for that team.
+- **Go-live gate:** added by setup. If the space's workflow later loses it, the page says so and offers
+  **Add the go-live check**. It can also be added by hand under Rules → Validate details.
+- **MCP clients:** a site admin turns on Detour Check's tools under admin.atlassian.com → Apps → Sites →
+  your site → Connected apps. Then, for example:
+  `claude mcp add --transport http detour-check https://mcp.atlassian.com/forge/6da71f64-f985-4d80-8158-d64afc976b81`
 
-`app/` is a Jira global page (Custom UI). The page in `app/static/brief` does the work in the
-browser: it fetches today's diversions, roadworks permits and passenger messages from Bordeaux open
-data, matches them to routes from a bundled network snapshot (`src/network.json`), and shows the
-driver brief and the control room. The backend (`app/src/index.js`) only stores who read what, per
-day, in Forge storage.
+## Beyond Bordeaux
+
+The check needs three things, and most cities publish all three:
+
+| Detour Check reads | In Bordeaux | Elsewhere |
+|---|---|---|
+| Planned roadworks, with an outline and dates | `ci_chantier` permits | [WZDx](https://github.com/usdot-jpo-ode/wzdx) work zone feeds (US), DATEX II roadworks (EU), city permit registers |
+| The network: lines, routes and stops | `sv_ligne_a`, `sv_chem_l`, `sv_arret_p` | Any [GTFS](https://gtfs.org) feed |
+| Published detours and passenger messages | `sv_devia_l`, `sv_messa_a` | [GTFS-Realtime Service Alerts](https://gtfs.org/realtime/), GTFS-Flex or the operator's own detour export |
+
+Everything specific to Bordeaux sits in one place: the feed names in `app/src/model.js`, and the snapshot
+script for the network. The checks, the change requests, the sign-offs and the agent work on any city's
+data. A second city means a small adapter that turns its feeds into the same three shapes.
+
+The people who would install it are a transit operator's network planning and passenger information teams,
+or a city's roads department. Both already run planned changes through a service desk.
+
+## Data and licences
+
+All data is open and needs no key.
+
+| What | Dataset | Publisher |
+|---|---|---|
+| Roadworks permits | [ci_chantier](https://opendata.bordeaux-metropole.fr/explore/dataset/ci_chantier/) | Ville de Bordeaux |
+| Published bus detours | [sv_devia_l](https://opendata.bordeaux-metropole.fr/explore/dataset/sv_devia_l/) | Bordeaux Métropole |
+| Messages at stops | [sv_messa_a](https://opendata.bordeaux-metropole.fr/explore/dataset/sv_messa_a/) | Bordeaux Métropole |
+| Lines, routes, stops | [sv_ligne_a](https://opendata.bordeaux-metropole.fr/explore/dataset/sv_ligne_a/), [sv_chem_l](https://opendata.bordeaux-metropole.fr/explore/dataset/sv_chem_l/), [sv_arret_p](https://opendata.bordeaux-metropole.fr/explore/dataset/sv_arret_p/) | Bordeaux Métropole |
+
+- **Licence:** the datasets are published under the [Licence Ouverte](https://www.etalab.gouv.fr/wp-content/uploads/2014/05/Licence_Ouverte.pdf).
+- **Map tiles:** © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors.
+- **Coverage:** the roadworks feed is the City of Bordeaux's own, titled for Bordeaux and Mérignac. On the
+  demo day, 58 of the 61 roadworks on bus routes are in Bordeaux. Works permitted by the other towns on
+  the network are not in it.
+
+## How it is built
+
+- **`app/`:** a Forge app on Node 24.
+  - A Jira global page and an issue panel, both Custom UI: `static/brief`.
+  - A resolver: `src/index.js`.
+  - A Rovo agent with five actions, served over MCP too.
+  - An hourly scheduled trigger.
+  - A queue consumer that builds live data in the background: `src/live.js`.
+  - An issue-deleted trigger.
+  - An indexed issue property for JQL, and a workflow validator function.
+- **`src/model.js`:** the matching and the checks. It matches permit outlines to routes within 15 m, decides
+  whether a detour goes round the works, and computes the coverage dates.
+- **Data:**
+  - The demo day is computed at build time (`scripts/precompute.mjs`).
+  - Live data is built by the queue consumer and stored gzipped in Forge storage.
+  - The page draws the last copy it saw straight away, then refreshes it.
+- **Requests:** they run as the person using the app, so Jira's own permissions apply and the history
+  shows who did what. A few run as the app: the hourly check, the status written on work items, the
+  team-group lookup and the clean-up when a work item is deleted.
 
 ```bash
 cd app
 npm install && npm --prefix static/brief install
-npm run deploy      # builds the page and deploys to the development environment
-npm run snapshot    # refreshes the network snapshot when routes or stops change
+npm run check      # lint and tests (a fake Jira and fake Forge storage, no site needed)
+npm run build      # precomputes the demo day and builds the page
+npm run deploy     # check, build, deploy to the development environment
+npm run demo-day   # freezes today's feeds as the demo day
+npm run snapshot   # refreshes the network snapshot
 ```
 
-After a change to permissions in `manifest.yml`, run
-`forge install --upgrade --demo-site --product jira --environment development`.
+Forge needs Node 24.22.2 or newer (`.node-version`). Opened outside Jira, the page runs on a local stand-in
+(`static/brief/src/local.js`), so it can be tried with any static server.
 
-Notes:
-- Forge needs Node 24.22.2 or newer (pinned in `.node-version`).
-- Deploys skip `forge lint` (`--no-verify`) because the linter currently hangs on this project.
-- Opened outside Jira (for example `python3 -m http.server -d app/static/brief/build`), the page
-  keeps reads in memory so it can be tried without Forge.
+`prototype/` is the first local prototype, kept for reference.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

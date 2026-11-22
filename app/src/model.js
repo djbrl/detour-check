@@ -286,6 +286,8 @@ export function buildDesk(feeds, now) {
       lines: ids, shape, geo: parts.map((l) => thin(l, 10)),
       // Where the detour leaves and rejoins the route, in metres.
       from: from ? toXY([from.lon, from.lat]).map(Math.round) : null, to: to ? toXY([to.lon, to.lat]).map(Math.round) : null,
+      // The same two stops for the map, where the detour is pinned at both ends.
+      leaves: from ? { name: from.name, lat: from.lat, lon: from.lon } : null, rejoins: to ? { name: to.name, lat: to.lat, lon: to.lon } : null,
     });
   }
 
@@ -346,6 +348,16 @@ export const IMPACTS = {
   none: 'No service impact',
 };
 
+// The permit's dates are the floor: a plan can say the works run longer or start sooner, but never
+// that they are shorter than permitted, or narrowing the plan would make a missing detour pass.
+// Everything that shows the plan's dates (checks, fields, timeline) goes through this.
+export function planDates(plan, item) {
+  return {
+    starts: [plan.starts, item.starts].filter(Boolean).sort()[0],
+    ends: item.ends && plan.ends ? [plan.ends, item.ends].sort()[1] : plan.ends || item.ends,
+  };
+}
+
 // What a change request starts from before anyone has assessed it.
 export function defaultPlan(item) {
   return { item: item.id, impact: null, lines: item.lines, starts: item.starts, ends: item.ends, stops: item.stops.map((x) => x.id), directions: 'both' };
@@ -391,6 +403,7 @@ export function runChecks(plan, item, desk) {
   const checks = [];
   if (!plan.impact) return { state: 'not-assessed', checks, failing: 0 };
   if (plan.impact === 'none') return { state: 'no-impact', checks, failing: 0 };
+  plan = { ...plan, ...planDates(plan, item) };
   const due = plan.starts ? addDays(plan.starts, -1) : desk.today;
   const late = desk.today >= due;
   const add = (id, label, ok, evidence, data = {}) => checks.push({ id, label, state: ok ? 'pass' : late ? 'fail' : 'pending', evidence, due, data });
@@ -486,7 +499,7 @@ function gapOf(c, plan, desk) {
 // instead of describing it. The works bar is the permit; the plan's dates show only when they differ.
 // The detour bar runs until the first line runs out, the same rule as the "covers the whole works" check.
 export function timelineOf(item, desk, plan = null, result = null) {
-  const p = plan || defaultPlan(item);
+  const p = plan ? { ...plan, ...planDates(plan, item) } : defaultPlan(item);
   const { span } = coverage(item, desk, p);
   const spans = [...span.values()];
   const detour = spans.length ? { from: spans.map((x) => x.start).sort()[0], to: spans.map((x) => x.until).sort()[0] } : null;
@@ -526,14 +539,16 @@ export function outlook(item, desk, plan = null, r = null) {
   const out = (light, label, p, n) => ({ light, label, story, problem: p, more: p === problem ? more : [], next: n, timeline, gaps: gaps.map((c) => c.id) });
 
   if (assessed) {
-    if (plan.impact === 'none') return plan.signoffs?.ops
+    // "No effect" is green only once someone other than the person who said so has confirmed it.
+    if (plan.impact === 'none') return r?.ready
       ? out('green', 'No effect', 'Operations confirmed buses get through.', null)
-      : out('amber', 'Confirm', 'Marked as no effect on buses.', 'Operations signs off to confirm.');
-    if (result.failing) return out('red', gaps[0]?.id === 'diversion' ? 'No detour' : 'Falls short', problem, next);
+      : out('amber', 'Confirm', 'Marked as no effect on buses.', r?.blocker || 'Operations signs off to confirm.');
+    const none = gaps[0]?.id === 'diversion' && !gaps[0].data.found;
+    if (result.failing) return out('red', none ? 'No detour' : gaps[0]?.id === 'diversion' ? 'Partly covered' : 'Falls short', problem, next);
     if (gaps.length) return out('amber', `Due ${day(result.due, desk.now)}`, problem, next);
     if (r?.ready) return out('green', 'Ready', 'Everything is published and every team has signed off.', null);
     const left = r ? r.roles - r.signed : 4;
-    return out('amber', 'Sign-offs', 'What is published matches the plan.', `Waiting for ${left} of ${r?.roles ?? 4} teams to sign off.`);
+    return out('amber', 'Sign-offs', 'What is published matches the plan.', left ? `Waiting for ${left} of ${r?.roles ?? 4} teams to sign off.` : r?.blocker || null);
   }
   if (short.length) {
     const [p, n] = gapOf(short[0], worst, desk);
@@ -562,7 +577,7 @@ export function detail(item, desk) {
     ...summary(item, desk),
     stops: item.stops, geo: item.geo, quote: item.quote || null,
     lineGeo: Object.fromEntries(item.lines.map((id) => [id, lineGeo(id)])),
-    diversions: nearby.map((d) => ({ id: d.id, title: d.title, direction: DIRECTION[d.direction] || 'Both directions', starts: d.starts, ends: d.ends, endsLabel: dayLabel(d.ends, desk.now), lines: d.lines.map(lineInfo).filter(Boolean), geo: d.geo })),
+    diversions: nearby.map((d) => ({ id: d.id, title: d.title, direction: DIRECTION[d.direction] || 'Both directions', starts: d.starts, ends: d.ends, endsLabel: dayLabel(d.ends && endDay(d.ends), desk.now), lines: d.lines.map(lineInfo).filter(Boolean), geo: d.geo, leaves: d.leaves, rejoins: d.rejoins })),
     messages: item.lines.map((id) => ({ line: lineInfo(id), messages: (desk.messages.get(id) || []).slice(0, 3) })),
   };
 }
