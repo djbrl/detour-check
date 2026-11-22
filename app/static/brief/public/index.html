@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Change Desk</title>
+<link rel="stylesheet" href="main.css">
+</head>
+<body>
+<div id="loading" class="loading" role="status">
+  <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+</div>
+
+<div id="desk" hidden>
+  <header class="head">
+    <div class="sub" id="sub">Bordeaux Métropole bus and tram network</div>
+    <div class="head-actions">
+      <button class="btn" id="ask-week">Ask Rovo what needs attention</button>
+      <span class="lozenge" id="live">Loading</span>
+      <div class="menu">
+        <button class="btn subtle" id="menu-btn" aria-expanded="false" aria-controls="menu-panel" title="Settings">•••</button>
+        <div class="menu-panel" id="menu-panel" hidden>
+          <div class="menu-label">Data</div>
+          <div class="chips" id="mode-chips"></div>
+          <p class="menu-note">The demo day is a frozen copy of Bordeaux's feeds, so the app matches the video. Live reads them now.</p>
+          <div class="menu-label">Change requests go to</div>
+          <div><span id="space-name"></span> <button class="link" id="change-space">Change</button></div>
+        </div>
+      </div>
+    </div>
+  </header>
+  <div id="setup" hidden></div>
+  <main id="app" hidden>
+    <div class="filters">
+      <label class="sr" for="search">Search disruptions</label>
+      <input id="search" class="search" type="search" placeholder="Search a street or line">
+      <div class="seg" id="seg" role="group" aria-label="Show"></div>
+    </div>
+    <div class="split">
+      <div class="table-wrap" id="list"></div>
+      <aside class="panel" id="detail" aria-live="polite"></aside>
+    </div>
+  </main>
+</div>
+
+<div id="panel" hidden></div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>

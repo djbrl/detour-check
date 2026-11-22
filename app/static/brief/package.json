@@ -1,0 +1,16 @@
+{
+  "name": "shift-brief-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "snapshot": "node scripts/snapshot.mjs",
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "@forge/bridge": "7.3.0",
+    "leaflet": "1.9.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

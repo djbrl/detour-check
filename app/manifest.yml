@@ -1,0 +1,176 @@
+modules:
+  jira:globalPage:
+    - key: change-desk-page
+      resource: desk
+      resolver:
+        function: resolver
+      title: Change Desk
+  jira:issuePanel:
+    - key: change-desk-panel
+      resource: desk
+      resolver:
+        function: resolver
+      title: Change Desk
+      icon: resource:desk;icon.svg
+  rovo:agent:
+    - key: change-desk-agent
+      name: Change Desk
+      description: Plans disruptions on the bus and tram network, drafts impact
+        assessments and passenger notices, and checks that what was approved is
+        what is published.
+      icon: resource:desk;icon.svg
+      prompt: resource:agent;prompt.txt
+      conversationStarters:
+        - What needs my attention this week?
+        - Which change requests are failing their go-live check?
+        - Assess the next roadworks on line 1 and draft a passenger notice
+      actions:
+        - list-disruptions
+        - get-disruption
+        - create-change-request
+        - check-change-request
+        - record-assessment
+  rovo:mcp:
+    - key: change-desk-mcp
+      name: Change Desk
+      tools:
+        - list-disruptions
+        - get-disruption
+        - create-change-request
+        - check-change-request
+        - record-assessment
+  action:
+    - key: list-disruptions
+      name: List disruptions
+      function: fn-list
+      actionVerb: GET
+      description: Lists planned disruptions on the bus and tram network (roadworks on
+        a route, planned diversions, tram suspensions) with their dates, lines
+        and change request status.
+      inputs:
+        status:
+          title: Status
+          type: string
+          required: false
+          description: Optional filter. One of upcoming, in-force, no-change-request,
+            failing.
+        line:
+          title: Line
+          type: string
+          required: false
+          description: Optional line name to filter by, for example 1, G or B.
+    - key: get-disruption
+      name: Get disruption
+      function: fn-get
+      actionVerb: GET
+      description: Gets one disruption or change request in full, including affected
+        lines, nearby stops, published diversions, messages at stops, sign-offs
+        and go-live checks.
+      inputs:
+        disruption:
+          title: Disruption or change request
+          type: string
+          required: false
+          description: A disruption id such as works-199167 or tram-B, or a change request
+            key such as NET-12. Leave empty on a work item to use it.
+    - key: create-change-request
+      name: Create change request
+      function: fn-create
+      actionVerb: CREATE
+      description: Opens a Jira change request for a disruption, so it can be
+        assessed, signed off and checked before it goes live.
+      inputs:
+        disruption:
+          title: Disruption
+          type: string
+          required: true
+          description: The disruption id, such as works-199167.
+    - key: check-change-request
+      name: Check change request
+      function: fn-check
+      actionVerb: GET
+      description: Runs the go-live check on a change request and returns sign-offs
+        and every check with its evidence.
+      inputs:
+        changeRequest:
+          title: Change request
+          type: string
+          required: false
+          description: The work item key, such as NET-12. Leave empty on a work item to
+            use it.
+    - key: record-assessment
+      name: Record assessment
+      function: fn-record
+      actionVerb: UPDATE
+      description: Records the impact of a change request and adds an impact
+        assessment and a draft passenger notice to it as comments.
+      inputs:
+        changeRequest:
+          title: Change request
+          type: string
+          required: false
+          description: The work item key, such as NET-12. Leave empty on a work item to
+            use it.
+        impact:
+          title: Impact
+          type: string
+          required: false
+          description: One of closed (road closed, buses divert), stops (stops not
+            served), narrowed (lane narrowed, delays only), none (no service
+            impact).
+        assessment:
+          title: Impact assessment
+          type: string
+          required: false
+          description: The impact assessment text.
+        passengerNotice:
+          title: Passenger notice
+          type: string
+          required: false
+          description: The draft passenger notice, French then English.
+  scheduledTrigger:
+    - key: go-live-check
+      function: fn-hourly
+      interval: hour
+  function:
+    - key: resolver
+      handler: index.handler
+    - key: fn-list
+      handler: index.listDisruptions
+    - key: fn-get
+      handler: index.getDisruption
+    - key: fn-create
+      handler: index.createChangeRequestAction
+    - key: fn-check
+      handler: index.checkChangeRequest
+    - key: fn-record
+      handler: index.recordAssessment
+    - key: fn-hourly
+      handler: index.hourly
+      timeoutSeconds: 120
+resources:
+  - key: desk
+    path: static/brief/build
+  - key: agent
+    path: agent
+permissions:
+  scopes:
+    - storage:app
+    - read:jira-work
+    - write:jira-work
+    - read:jira-user
+  content:
+    styles:
+      - unsafe-inline
+  external:
+    fetch:
+      backend:
+        - address: https://opendata.bordeaux-metropole.fr
+    images:
+      - address: https://tile.openstreetmap.org
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 512
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/6da71f64-f985-4d80-8158-d64afc976b81
