@@ -3,10 +3,11 @@
 import Resolver from '@forge/resolver';
 import { kvs } from '@forge/kvs';
 import {
-  ITEM, ISSUE_KEY, need, getSettings, saveSettings, setupStatus, setUp, currentDesk, changeRequests, changeRequestView,
+  ITEM, ISSUE_KEY, need, getSettings, saveSettings, setupStatus, gateStatus, setUp, currentDesk, changeRequests, changeRequestView,
   readiness, lowered, lowering, createChangeRequest, savePlan, signOff, checkAll, getPlan, addComment, publishStatus, forgetIssue, goLiveCheck, MARKED,
+  liveKeys, liveNow, liveOutlook,
 } from './desk.js';
-import { summary, detail, outlook, IMPACTS } from './model.js';
+import { summary, detail, outlook, coverage, lineInfo, IMPACTS, LIGHTS, dayLabel } from './model.js';
 
 const str = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 // Pages send the sign-off state they want ("signed"); older pages sent "undo".
@@ -14,9 +15,9 @@ const wantsUndo = (payload) => (typeof payload?.signed === 'boolean' ? !payload.
 
 // The desk list: every disruption with its change request, if any, and where it stands.
 async function deskList() {
-  const loaded = await currentDesk();
+  // The desk, the plans and which work items are live are three round trips, asked at once.
+  const [loaded, crs, live] = await Promise.all([currentDesk(), changeRequests(), liveKeys()]);
   const { settings, desk } = loaded;
-  const crs = await changeRequests();
   const items = [];
   // Every plan on the desk is read at once rather than one after another, and plans opened before
   // the panel had its current display condition get the marker once.
@@ -34,13 +35,14 @@ async function deskList() {
     let r = null;
     if (cr) {
       plan = plans.get(item.id);
-      if (plan) { r = readiness(plan, item, desk); state = { state: r.state, failing: r.failing, pending: r.pending, signed: r.signed, roles: r.roles, ready: r.ready, impact: plan.impact }; }
+      if (plan) { r = readiness(plan, item, desk); state = { state: r.state, failing: r.failing, pending: r.pending, signed: r.signed, roles: r.roles, ready: r.ready, impact: plan.impact, live: live.has(cr.key), liveFailing: live.has(cr.key) && r.failing > 0 }; }
     }
-    items.push({ ...summary(item, desk), outlook: outlook(item, desk, plan, r), changeRequest: cr ? { key: cr.key, ...state } : null });
+    items.push({ ...summary(item, desk), outlook: liveOutlook(outlook(item, desk, plan, r), !!state?.liveFailing), changeRequest: cr ? { key: cr.key, ...state } : null });
   }
-  // Problems first, then what needs checking, then what is covered; sooner first within each.
+  // Problems first, then what needs checking (works already under way first), then what is covered;
+  // sooner first within each.
   const rank = { red: 0, amber: 1, green: 2 };
-  items.sort((a, b) => rank[a.outlook.light] - rank[b.outlook.light] || a.starts.localeCompare(b.starts));
+  items.sort((a, b) => rank[a.outlook.light] - rank[b.outlook.light] || !!b.outlook.underway - !!a.outlook.underway || a.starts.localeCompare(b.starts));
   return { settings, now: desk.now, today: desk.today, takenAt: desk.takenAt, mode: desk.mode, liveLoading: !!desk.liveLoading, liveError: desk.liveError || null, items };
 }
 
@@ -60,11 +62,15 @@ resolver.define('getDesk', timed('getDesk', async () => deskList()));
 // the map, so only what changed goes back.
 async function itemView(id, { slim = false, desk = null, key = null, plan = null } = {}) {
   need(ITEM.test(id), 'Unknown disruption');
-  desk ||= (await currentDesk()).desk;
+  if (!desk || !key) {
+    const [loaded, cr] = await Promise.all([desk ? null : currentDesk(), key ? null : kvs.get(`cr:${id}`)]);
+    desk ||= loaded.desk;
+    key ||= cr?.key;
+  }
   const item = desk.byId.get(id);
   need(item, 'That disruption is no longer on the desk');
-  key ||= (await kvs.get(`cr:${id}`))?.key;
-  const view = key ? await changeRequestView(key, desk, { full: false, plan }) : null;
+  const [view, live] = key ? await Promise.all([changeRequestView(key, desk, { full: false, plan }), liveNow(key)]) : [null, false];
+  if (view && live) Object.assign(view, { live, liveFailing: view.readiness.failing > 0, outlook: liveOutlook(view.outlook, view.readiness.failing > 0) });
   return { ...(slim ? { id } : detail(item, desk)), outlook: view?.outlook || outlook(item, desk), changeRequest: view };
 }
 
@@ -79,9 +85,9 @@ resolver.define('answer', timed('answer', async ({ payload, context }) => {
   need(IMPACTS[impact], 'Unknown answer');
   // The desk and the plan are read once and handed along, since each read is a round trip.
   const reason = str(payload?.reason, 500);
-  const loaded = await currentDesk();
+  const [loaded, existing] = await Promise.all([currentDesk(), kvs.get(`cr:${id}`)]);
   // A first answer that lowers the impact is checked before any work item is opened.
-  const why = (await kvs.get(`cr:${id}`)) ? null : lowering({ impact, directions: 'both' }, reason, context.accountId);
+  const why = existing ? null : lowering({ impact, directions: 'both' }, reason, context.accountId);
   const cr = await createChangeRequest(id, context.accountId, { impact, ...(why ? { lowered: why } : {}) }, loaded);
   const plan = cr.created ? cr.plan : await savePlan(cr.key, { impact, reason, by: context.accountId }, loaded);
   return itemView(id, { slim: true, desk: loaded.desk, key: cr.key, plan });
@@ -98,7 +104,8 @@ resolver.define('tick', timed('tick', async ({ payload, context }) => {
 
 resolver.define('saveSettings', async ({ payload }) => saveSettings({ mode: payload?.mode, project: payload?.project }));
 resolver.define('getSettings', async () => getSettings());
-resolver.define('getSetup', timed('getSetup', async () => setupStatus()));
+resolver.define('getSetup', timed('getSetup', async () => setupStatus({ cachedGate: true })));
+resolver.define('getGate', timed('getGate', async () => gateStatus()));
 resolver.define('setUp', timed('setUp', async ({ payload }) => setUp({ project: payload?.project ? str(payload.project, 20) : null, create: payload?.create === true })));
 
 resolver.define('createChangeRequest', async ({ payload, context }) => createChangeRequest(str(payload?.id, 40), context.accountId));
@@ -106,23 +113,26 @@ resolver.define('createChangeRequest', async ({ payload, context }) => createCha
 // The issue panel reads its work item from the platform context, never from the page.
 const panelKey = (context) => str(context?.extension?.issue?.key, 40);
 
-resolver.define('getPanel', async ({ context }) => {
+// The desk, the plan and the work item's status are read at once: each is a round trip.
+resolver.define('getPanel', timed('getPanel', async ({ context }) => {
   const key = panelKey(context);
   need(ISSUE_KEY.test(key), 'Open this panel on a work item');
-  const { desk } = await currentDesk();
-  return { key, mode: desk.mode, now: desk.now, changeRequest: await changeRequestView(key, desk) };
-});
+  const [{ desk }, plan, live] = await Promise.all([currentDesk(), getPlan(key), liveNow(key)]);
+  return { key, mode: desk.mode, now: desk.now, changeRequest: plan ? await changeRequestView(key, desk, { plan, live }) : null };
+}));
 
-resolver.define('savePlan', async ({ payload, context }) => {
-  await savePlan(panelKey(context), { impact: payload?.impact, directions: payload?.directions, ends: payload?.ends, reason: payload?.reason ? str(payload.reason, 500) : undefined, by: context.accountId });
-  const { desk } = await currentDesk();
-  return changeRequestView(panelKey(context), desk);
-});
+resolver.define('savePlan', timed('savePlan', async ({ payload, context }) => {
+  const key = panelKey(context);
+  const [loaded, live] = await Promise.all([currentDesk(), liveNow(key)]);
+  const plan = await savePlan(key, { impact: payload?.impact, directions: payload?.directions, ends: payload?.ends, reason: payload?.reason ? str(payload.reason, 500) : undefined, by: context.accountId }, loaded);
+  return changeRequestView(key, loaded.desk, { plan, live });
+}));
 
 resolver.define('signOff', timed('signOff', async ({ payload, context }) => {
-  const plan = await signOff(panelKey(context), str(payload?.role, 20), context.accountId, wantsUndo(payload));
-  const { desk } = await currentDesk();
-  return changeRequestView(panelKey(context), desk, { plan });
+  const key = panelKey(context);
+  const [loaded, live] = await Promise.all([currentDesk(), liveNow(key)]);
+  const plan = await signOff(key, str(payload?.role, 20), context.accountId, wantsUndo(payload), loaded);
+  return changeRequestView(key, loaded.desk, { plan, live });
 }));
 
 export const handler = resolver.getDefinitions();
@@ -132,12 +142,72 @@ export const handler = resolver.getDefinitions();
 
 const contextKey = (payload) => str(payload?.context?.jira?.issueKey, 40);
 
-// Map geometry means nothing to a model and costs tokens, so Rovo gets the view without it.
-function forModel(view) {
-  if (!view?.disruption) return view;
-  const { geo, lineGeo, diversions, ...d } = view.disruption;
-  const { timeline, ...o } = view.outlook || {};
-  return { ...view, outlook: o, disruption: { ...d, publishedDetours: diversions.map(({ geo: g, ...x }) => x) } };
+// What a model reads is what a person would say: streets, line numbers, team names and dates as
+// labels, never map geometry, enum values or account ids. Each roadworks site keeps a `ref` only so
+// the next action can name it; the prompt keeps refs out of replies.
+const LINE = (l) => (l ? `${l.mode === 'TRAM' ? 'Tram' : 'Bus'} ${l.short}` : null);
+const STATE = { 'not-assessed': 'Not answered yet', 'no-impact': 'No effect on buses, waiting for Operations', failing: 'Checks fail', pending: 'Checks not due yet', ready: 'Checks pass', 'not-found': 'Roadworks no longer published' };
+const unique = (xs) => [...new Set(xs.filter(Boolean))];
+
+function planForModel(view, now) {
+  const r = view.readiness;
+  const oneWay = view.directions === 'one' && (view.impact === 'closed' || view.impact === 'stops');
+  return {
+    key: view.key,
+    impact: `${view.impactLabel}${oneWay ? ', one way only' : ''}`,
+    worksUntil: view.endsLabel,
+    status: r.ready ? 'Ready to go live' : STATE[r.state] || 'Not answered yet',
+    ...(view.liveFailing ? { warning: 'Live in Jira, but the checks no longer pass' } : view.live ? { live: 'Live in Jira' } : {}),
+    readyToGoLive: r.ready,
+    ...(r.blocker ? { stillNeeded: r.blocker } : {}),
+    signOffs: view.signoffs.map((s) => `${s.label}: ${s.at ? 'signed off' : 'waiting'}`),
+    checks: r.checks.map((c) => ({ check: c.label, result: c.state === 'pass' ? 'Passes' : c.state === 'fail' ? 'Fails' : `Due ${dayLabel(c.due, now)}`, evidence: c.evidence })),
+    passengerNotice: view.notice ? 'Drafted' : 'Not drafted yet',
+    ...(view.lowered ? { reasonForLowerImpact: view.lowered.reason } : {}),
+  };
+}
+
+// One roadworks site in full. The detour dates are given per line, so a passenger notice promises
+// each detour only as far as it is published.
+function siteForModel(item, desk, view = null) {
+  const now = desk.now;
+  const d = detail(item, desk);
+  const o = view?.outlook || outlook(item, desk);
+  const ends = view?.ends || item.ends;
+  const { buses, span } = coverage(item, desk);
+  return {
+    ref: item.id,
+    place: d.title,
+    works: d.what,
+    status: d.status === 'in-force' ? 'In force' : 'Not started yet',
+    starts: d.startsLabel,
+    ends: d.endsLabel,
+    lines: d.lines.map(LINE),
+    stopsNearby: unique(d.stops.map((s) => s.name)).slice(0, 12),
+    light: LIGHTS[o.light], label: o.label, summary: o.story, problem: o.problem, alsoWrong: o.more, nextStep: o.next,
+    daysWithoutDetour: o.timeline?.gapDays || 0,
+    worksUntil: dayLabel(ends, now),
+    detourByLine: buses.map((id) => {
+      const s = span.get(id);
+      const line = LINE(lineInfo(id));
+      return s ? { line, from: dayLabel(s.start, now), until: dayLabel(s.until, now), endsBeforeTheWorks: !!ends && s.until < ends } : { line, detour: 'None published' };
+    }),
+    publishedDetours: d.diversions.map((v) => ({ name: v.title, lines: v.lines.map(LINE), direction: v.direction, from: dayLabel(v.starts, now), until: v.endsLabel, leavesAt: v.leaves?.name || null, rejoinsAt: v.rejoins?.name || null })),
+    messagesAtStops: d.messages.filter((m) => m.line && m.messages.length).map((m) => ({ line: LINE(m.line), messages: m.messages.map((x) => x.text) })),
+    changeRequest: view ? planForModel(view, now) : 'None yet',
+  };
+}
+
+// A street from the user's words finds the roadworks on it: every site whose address contains the
+// words, or whose street the words name. Accents and punctuation do not matter.
+const plain = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+function sitesNamed(desk, text) {
+  const q = plain(text);
+  if (q.length < 4) return [];
+  return desk.items.filter((i) => {
+    const street = plain(i.title.replace(/,[^,]*$/, ''));
+    return plain(i.title).includes(q) || (street.length >= 6 && q.includes(street));
+  });
 }
 
 export async function listDisruptions(payload) {
@@ -151,33 +221,49 @@ export async function listDisruptions(payload) {
   if (status === 'problem') items = items.filter((i) => i.outlook.light === 'red');
   if (line) items = items.filter((i) => i.lines.some((l) => l.short.toUpperCase() === line));
   return {
-    data: list.mode === 'demo' ? `Frozen demo day, as published on ${list.takenAt}` : 'Live Bordeaux open data',
-    today: list.today,
+    data: list.mode === 'demo' ? `Frozen demo day, as published on ${dayLabel(list.takenAt, list.now)}` : 'Live Bordeaux open data',
+    today: dayLabel(list.today, list.now),
     count: items.length,
-    disruptions: items.slice(0, 40).map((i) => ({
-      id: i.id, title: i.title, what: i.what, status: i.status, starts: i.startsLabel, ends: i.endsLabel,
-      light: i.outlook.label, summary: i.outlook.story, problem: i.outlook.problem, nextStep: i.outlook.next,
-      lines: i.lines.map((l) => `${l.mode === 'TRAM' ? 'Tram' : 'Bus'} ${l.short}`),
-      changeRequest: i.changeRequest ? `${i.changeRequest.key} (${i.changeRequest.state}, ${i.changeRequest.signed}/${i.changeRequest.roles} signed off)` : 'none',
-    })),
+    disruptions: items.slice(0, 40).map((i) => {
+      const cr = i.changeRequest;
+      return {
+        ref: i.id, place: i.title, works: i.what, status: i.status === 'in-force' ? 'In force' : 'Not started yet', starts: i.startsLabel, ends: i.endsLabel,
+        light: LIGHTS[i.outlook.light], label: i.outlook.label, summary: i.outlook.story, problem: i.outlook.problem, nextStep: i.outlook.next,
+        daysWithoutDetour: i.outlook.timeline?.gapDays || 0,
+        lines: i.lines.map(LINE),
+        changeRequest: !cr ? 'None yet' : `${cr.key}: ${cr.ready ? 'ready to go live' : (STATE[cr.state] || 'not answered yet').toLowerCase()}, ${cr.signed ?? 0} of ${cr.roles ?? 4} teams signed off${cr.liveFailing ? '. Live in Jira, but the checks no longer pass' : ''}`,
+      };
+    }),
   };
 }
 
 export async function getDisruption(payload) {
   const { desk } = await currentDesk();
-  let id = str(payload?.disruption, 40) || contextKey(payload);
-  if (ISSUE_KEY.test(id)) {
-    const view = await changeRequestView(id, desk);
-    need(view, `${id} is not a plan from Detour Check`);
-    return forModel(view);
+  const asked = str(payload?.disruption, 100) || contextKey(payload);
+  if (ISSUE_KEY.test(asked)) {
+    const [plan, live] = await Promise.all([getPlan(asked), liveNow(asked)]);
+    need(plan, `${asked} is not a plan from Detour Check`);
+    const view = await changeRequestView(asked, desk, { plan, live, full: false });
+    const item = desk.byId.get(view.item);
+    return item ? siteForModel(item, desk, view) : { changeRequest: planForModel(view, desk.now), note: 'These roadworks are no longer in the published data.' };
   }
-  need(ITEM.test(id), 'Give a disruption id like works-199167, or a change request key');
-  const item = desk.byId.get(id);
-  need(item, 'That disruption is not on the desk');
-  const { geo, lineGeo, diversions, ...rest } = detail(item, desk);
-  const cr = await kvs.get(`cr:${id}`);
-  const { timeline, ...o } = outlook(item, desk);
-  return { ...rest, outlook: o, publishedDetours: diversions.map(({ geo: g, ...d }) => d), changeRequest: cr?.key || null };
+  let item = ITEM.test(asked) ? desk.byId.get(asked) : null;
+  if (!item) {
+    need(!ITEM.test(asked), 'That roadworks site is not on the desk');
+    const found = sitesNamed(desk, asked);
+    need(found.length, `No roadworks on a bus route match "${asked.slice(0, 60)}". Give a disruption id, a change request key or a street name.`);
+    if (found.length > 1) {
+      return {
+        several: `${found.length} roadworks match. List them and ask which one before doing anything else.`,
+        matches: found.slice(0, 10).map((i) => ({ ref: i.id, place: i.title, works: i.what, dates: `${dayLabel(i.starts, desk.now)} to ${dayLabel(i.ends, desk.now)}`, lines: i.lines.map((id) => LINE(lineInfo(id))) })),
+      };
+    }
+    [item] = found;
+  }
+  const cr = await kvs.get(`cr:${item.id}`);
+  const [plan, live] = cr ? await Promise.all([getPlan(cr.key), liveNow(cr.key)]) : [null, false];
+  const view = plan ? await changeRequestView(cr.key, desk, { plan, live, full: false }) : null;
+  return siteForModel(item, desk, view);
 }
 
 export async function createChangeRequestAction(payload, context) {
@@ -188,21 +274,15 @@ export async function createChangeRequestAction(payload, context) {
 
 export async function checkChangeRequest(payload) {
   const key = str(payload?.changeRequest, 40) || contextKey(payload);
-  need(ISSUE_KEY.test(key), 'Give a change request key like NET-12');
-  const { desk } = await currentDesk();
-  const view = await changeRequestView(key, desk);
-  need(view, `${key} is not a plan from Detour Check`);
-  const r = view.readiness;
-  return {
-    key, impact: view.impactLabel, state: r.state, readyToGoLive: r.ready, ...(r.blocker ? { stillNeeded: r.blocker } : {}),
-    signOffs: view.signoffs.map((s) => `${s.label}: ${s.at ? 'signed' : 'waiting'}`),
-    checks: r.checks.map((c) => ({ check: c.label, result: c.state, evidence: c.evidence })),
-  };
+  need(ISSUE_KEY.test(key), 'Give a change request key like ROAD-1');
+  const [{ desk }, plan, live] = await Promise.all([currentDesk(), getPlan(key), liveNow(key)]);
+  need(plan, `${key} is not a plan from Detour Check`);
+  return planForModel(await changeRequestView(key, desk, { plan, live, full: false }), desk.now);
 }
 
 export async function recordAssessment(payload) {
   const key = str(payload?.changeRequest, 40) || contextKey(payload);
-  need(ISSUE_KEY.test(key), 'Give a change request key like NET-12');
+  need(ISSUE_KEY.test(key), 'Give a change request key like ROAD-1');
   // Only plans Detour Check opened take comments from here, never any work item a model names.
   need(await getPlan(key), `${key} is not a plan from Detour Check`);
   const impact = str(payload?.impact, 20);

@@ -23,7 +23,7 @@ const call = async (name, payload = {}) => {
   }
 };
 
-const AGENT = { type: 'forge', agentKey: 'change-desk-agent', agentName: 'Detour Check' };
+const AGENT = { type: 'forge', agentKey: 'detour-check-agent', agentName: 'Detour Check' };
 async function askRovo(prompt) {
   if (!inJira) { alert(`Rovo would open with:\n\n${prompt}`); return; }
   const b = await bridge;
@@ -64,6 +64,7 @@ const store = {
 // Day and month only, with the year when it is not this one.
 // Today on the network's clock (the demo day, or now), set by the desk or the panel when they load.
 let TODAY = new Date().toISOString().slice(0, 10);
+const fullDay = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Europe/Paris' });
 const shortDay = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: iso.slice(0, 4) !== TODAY.slice(0, 4) ? 'numeric' : undefined, timeZone: 'Europe/Paris' });
 
 // ---------- where the data comes from ----------
@@ -194,7 +195,7 @@ function coverage(o) {
   const today = t.today || TODAY;
   const from = t.plan?.from || t.from;
   const to = t.plan?.to || t.to || fromDay(dayNo(from) + 30);
-  const range = (a, b) => `${shortDay(a)} – ${b ? shortDay(b) : '?'}`;
+  const range = (a, b) => `${a && b && a.slice(0, 4) !== b.slice(0, 4) ? fullDay(a) : shortDay(a)} – ${b ? (a && a.slice(0, 4) !== b.slice(0, 4) ? fullDay(b) : shortDay(b)) : '?'}`;
   const days = (n) => `${n} ${n === 1 ? 'day' : 'days'}`;
   const d = t.detour;
   // Each day is covered, missed (only from today on, and only when the backend counts a gap), or neither.
@@ -276,14 +277,16 @@ function steps(cr, ready, o) {
     : `<div class="step-k">What happens to buses here?</div>
       ${choices(ANSWERS.map(([k]) => k)).replace(' hidden>', '>')}`;
   const jobs = tasks(cr, o);
+  const notMine = (role) => role === 'ops' && cr?.lowered && ME && cr.lowered.by === ME && !sign(role)?.at;
+  if (notMine('ops')) jobs.ops = 'Someone else confirms: you lowered the impact';
   const teams = cr?.impact === 'none' ? TEAMS.slice(0, 1) : TEAMS;
-  return `${r?.ready ? '<div class="ready">✓ Ready to go live: every team signed off and the checks pass.</div>' : ''}
+  return `${cr?.liveFailing ? '<div class="live-fail">Live, but the checks no longer pass</div>' : r?.ready ? '<div class="ready">✓ Ready to go live: every team signed off and the checks pass.</div>' : ''}
   <ol class="steps">
     <li class="${cr?.impact ? 'done' : 'now'}">${first}</li>
     <li class="${!cr?.impact ? 'later' : r?.ready ? 'done' : 'now'}"><div class="step-k">Team sign-offs</div>
       <div class="step-sub">Each team confirms its part is done${cr?.key ? `, recorded on ${esc(cr.key)}` : ''}.</div>
       <ul class="teams">${teams.map(([role, t]) => { const s = sign(role); return `<li><span class="team"><b>${t}</b><span>${esc(jobs[role])}</span></span>
-        <button data-role="${role}" aria-pressed="${!!s?.at}" ${s?.at ? `title="Signed ${esc(when(s.at))}"` : ''} ${cr?.impact ? '' : 'disabled'}>${s?.at ? `✓ ${esc(names[s.by] || 'Signed')}` : 'Sign off'}</button></li>`; }).join('')}</ul></li>
+        <button data-role="${role}" aria-pressed="${!!s?.at}" ${s?.at ? `title="Signed ${esc(when(s.at))}"` : ''} ${cr?.impact && !notMine(role) ? '' : 'disabled'}>${s?.at ? `✓ ${esc(names[s.by] || 'Signed')}` : 'Sign off'}</button></li>`; }).join('')}</ul></li>
     ${cr?.impact === 'none' ? '' : `<li class="${!cr?.impact ? 'later' : cr.notice ? 'done' : 'now'}"><div class="step-k">Passenger notice</div>
       ${cr?.notice
         ? `<div class="answered"><span>Drafted on ${esc(cr.key)}, for Passenger info to check</span><button class="link small" id="write-notice">Rewrite</button></div>`
@@ -340,9 +343,11 @@ function wireSteps(root) {
 
 // While a click is saved, the button shows a spinner and the rest of its step waits, so a double
 // click cannot send it twice and nothing looks switched off.
+// A sign-off flips as soon as it is clicked; the answer that comes back confirms or restores it.
 async function working(button, scope, fn) {
   scope.classList.add('waiting');
-  button.insertAdjacentHTML('beforeend', '<i class="spin" aria-hidden="true"></i>');
+  if (button.matches('[data-role]')) button.setAttribute('aria-pressed', String(button.getAttribute('aria-pressed') !== 'true'));
+  if (!button.querySelector('.spin')) button.insertAdjacentHTML('beforeend', '<i class="spin" aria-hidden="true"></i>');
   button.setAttribute('aria-busy', 'true');
   try { return await fn(); } finally {
     scope.classList.remove('waiting');
@@ -413,9 +418,22 @@ let SETUP = null;
 let setupFailed = false;
 // "Change" in the menu opens the chooser without clearing the current space.
 let choosingSpace = false;
+// The last answer this browser saw is drawn first. The gate's state takes longest to read (every
+// workflow in the space), so it is asked for on its own and filled in when it arrives.
 async function loadSetup() {
+  const cached = store.get('setup');
+  SETUP ||= cached;
+  if (SETUP && D) { renderHead(); renderSetup(); }
   try { SETUP = await call('getSetup'); } catch (e) { console.warn(e); setupFailed = true; }
+  // The backend keeps a reading for ten minutes; without one, this browser's last stands in.
+  const kept = !!SETUP?.space?.gate;
+  if (SETUP?.space && !kept && cached?.project === SETUP.project) SETUP.space.gate = cached.space?.gate || null;
   if (D) { renderHead(); renderSetup(); }
+  if (SETUP?.admin && SETUP.space?.found && !kept) {
+    try { const gate = await call('getGate'); if (SETUP?.space && gate) SETUP.space.gate = gate; } catch (e) { console.warn(e); }
+    if (D) { renderHead(); renderSetup(); }
+  }
+  if (SETUP) store.set('setup', SETUP);
 }
 
 function spaceFacts() {
@@ -504,6 +522,7 @@ const street = (i) => i.title.replace(/, (Bordeaux|Bègles|Mérignac|Pessac|Tale
 // The row's one fact, in a few words: what is wrong, or what covers it.
 function fact(i) {
   const { timeline: t, gaps = [] } = i.outlook;
+  if (i.changeRequest?.liveFailing) return 'Live, but the checks no longer pass';
   if (!t.detour) return 'No detour';
   if (t.gapDays) return `Detour ends ${shortDay(t.detour.to)} · ${t.gapDays} ${t.gapDays === 1 ? 'day' : 'days'} short`;
   if (gaps[0] === 'directions') return 'Detour runs one way';
@@ -634,12 +653,16 @@ function renderDetail() {
     ${badges(item.lines, d ? line : undefined)}
     ${coverage(o)}
     ${space ? '' : '<div class="need-space">Choose a Jira space for plans first. <button class="link" id="go-space">Choose</button></div>'}
-    ${d ? steps(cr, space, o) : '<div class="skeleton"></div>'}
+    ${d ? steps(cr, space, o) : SKELETON_STEPS}
     ${d ? `<button class="btn rovo" id="rovo-handle" ${space ? '' : 'disabled'}>${ROVO_ICON}Let Rovo handle it</button>` : ''}`;
   $$('#detail [data-line]').forEach((b) => (b.onclick = () => { line = b.dataset.line; showLine(item); renderDetail(); }));
   $('#go-space')?.addEventListener('click', () => { $('#space')?.focus(); $('#setup')?.scrollIntoView({ block: 'nearest' }); });
   if (d) wireCard(item, d);
 }
+
+// Placeholders the size of what replaces them, so nothing below moves when it arrives.
+const SKELETON_STEPS = `<div class="sk-steps" aria-hidden="true"><i class="skeleton sk-line"></i><i class="skeleton sk-block"></i><i class="skeleton sk-line"></i>${'<i class="skeleton sk-team"></i>'.repeat(4)}<i class="skeleton sk-line"></i><i class="skeleton sk-btn"></i></div>`;
+const SKELETON_PANEL = `<div class="sk-panel" aria-hidden="true"><i class="skeleton sk-top"></i><i class="skeleton sk-title"></i><i class="skeleton sk-line"></i><i class="skeleton sk-badges"></i><i class="skeleton sk-cov"></i>${SKELETON_STEPS}</div>`;
 
 const ROVO_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l1.6 4.1 4.4.3-3.4 2.8 1.1 4.3L8 10.6 4.3 13l1.1-4.3L2 5.9l4.4-.3z" fill="currentColor"/></svg>';
 
@@ -647,7 +670,7 @@ const ROVO_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l1
 function update(d) {
   current = d;
   const i = D.items.findIndex((x) => x.id === d.id);
-  if (i >= 0) D.items[i] = { ...D.items[i], outlook: d.outlook, changeRequest: d.changeRequest ? { key: d.changeRequest.key } : null };
+  if (i >= 0) D.items[i] = { ...D.items[i], outlook: d.outlook, changeRequest: d.changeRequest ? { key: d.changeRequest.key, liveFailing: d.changeRequest.liveFailing } : null };
   renderList();
   drawOverview();
   renderDetail();
@@ -686,7 +709,7 @@ function wireCard(item, d) {
     if (reason === null) return;
     run(b, 'answer', { id: item.id, impact, reason }, (out) => { if (!cr) showFlag(`Saved in Jira as ${out.changeRequest.key}`); });
   }));
-  $$('#detail [data-role]').forEach((b) => (b.onclick = () => run(b, 'tick', { id: item.id, role: b.dataset.role, signed: b.getAttribute('aria-pressed') !== 'true' })));
+  $$('#detail [data-role]').forEach((b) => (b.onclick = () => { const signed = b.getAttribute('aria-pressed') !== 'true'; run(b, 'tick', { id: item.id, role: b.dataset.role, signed }); }));
   $('#add-reason')?.addEventListener('click', async (e) => {
     const reason = await askReason(e.target);
     if (reason) run(e.target, 'answer', { id: item.id, impact: cr.impact, reason });
@@ -700,7 +723,7 @@ function wireCard(item, d) {
 
 // The demo day's case is the new road layout on Cours de la Marne, where the detour ends a week
 // before the works. On live data it is the first roadworks whose published detour falls short.
-const realCase = () => D.items.find((i) => i.id === 'works-197100' && i.outlook.light === 'red') || D.items.find((i) => i.outlook.light === 'red') || D.items[0];
+const realCase = () => D.items.find((i) => i.id === 'works-197100') || D.items.find((i) => i.outlook.light === 'red') || D.items[0];
 
 // Today's roadworks as dots where they really are, so the first steps show this data, not a drawing.
 // `paint` sorts each one into base, ok (has a detour), check or gap (falls short); gaps are drawn last.
@@ -739,7 +762,7 @@ const STUCK = `<svg viewBox="0 0 320 150" aria-hidden="true">
 const PLAN = `<svg viewBox="0 0 320 150" aria-hidden="true">
   <rect x="24" y="16" width="272" height="118" rx="10" class="paper"/>
   <rect x="40" y="32" width="18" height="18" rx="4" class="cr"/><path d="M44 38 h9 l-3 -3 M54 44 h-9 l3 3" class="glyph"/>
-  <text x="66" y="45" class="key">NET-12</text><rect x="114" y="37" width="70" height="8" rx="4" class="bar"/>
+  <text x="66" y="45" class="key">177 Cours de la Marne</text>
   ${[0, 1, 2, 3].map((n) => `<g transform="translate(${52 + n * 30} 82)">${n < 3 ? '<circle r="12" class="signed"/><path d="M-5 0 l3.5 3.5 l6.5 -7" class="tick"/>' : '<circle r="11" class="unsigned"/>'}</g>`).join('')}
   <text x="40" y="117" class="small">3 of 4 teams signed off</text>
   <rect x="180" y="62" width="100" height="58" rx="8" class="note"/>
@@ -819,7 +842,14 @@ function showTutorial(at = 0) {
     if (e.shiftKey && i <= 0) { e.preventDefault(); f.at(-1).focus(); } else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
   };
   $('#tut-back')?.addEventListener('click', () => showTutorial(at - 1));
-  $('#tut-next').onclick = () => { if (!last) return showTutorial(at + 1); done(); seg = 'red'; select(realCase().id); };
+  $('#tut-next').onclick = () => {
+    if (!last) return showTutorial(at + 1);
+    done();
+    const real = realCase();
+    seg = real.outlook.light === 'red' ? 'red' : 'all';
+    renderList();
+    select(real.id);
+  };
   $('#tut-next').focus();
 }
 
@@ -940,7 +970,9 @@ async function renderPanel() {
     root.innerHTML = '<p class="dim">This work item was not planned from Detour Check. Open Detour Check from the Apps menu.</p>';
     return;
   }
-  await loadNames([...cr.signoffs.map((s) => s.by), cr.lowered?.by]);
+  // Names are a second round trip, so the panel is drawn first and again once they arrive.
+  const who = [...cr.signoffs.map((s) => s.by), cr.lowered?.by].filter((id) => id && !(id in names));
+  if (who.length && inJira) loadNames(who).then(() => { if (P?.changeRequest === cr) renderPanel(); });
   const d = cr.disruption;
   const o = cr.outlook;
   if (d && !d.lines.some((l) => l.id === panelLine)) panelLine = firstLine(d);
@@ -959,7 +991,7 @@ async function renderPanel() {
   wireSteps(root);
   const save = async (changes, b) => {
     const go = async () => { try { P.changeRequest = await call('savePlan', changes); } catch (e) { showFlag(e.message); } };
-    await (b ? working(b, b.closest('li'), go) : go());
+    await (b ? working(b, b.closest('li') || b.closest('.panel-more') || b, go) : go());
     renderPanel();
   };
   $$('[data-impact]', root).forEach((b) => (b.onclick = async () => {
@@ -971,18 +1003,19 @@ async function renderPanel() {
   $('#both')?.addEventListener('change', async (e) => {
     const reason = e.target.checked ? '' : await askReason(e.target);
     if (reason === null) { e.target.checked = true; return; }
-    save({ directions: e.target.checked ? 'both' : 'one', reason });
+    save({ directions: e.target.checked ? 'both' : 'one', reason }, e.target.closest('label'));
   });
   // A typed date passes through several valid days on the way (0002, 0020, 0202, 2026), so it is
   // saved once typing settles or the field is left, not on every keystroke.
   const ends = $('#ends');
   let endsTimer = null;
-  const saveEnds = () => { clearTimeout(endsTimer); endsTimer = null; if (ends.value && ends.value !== ends.defaultValue) save({ ends: ends.value }); };
+  const saveEnds = () => { clearTimeout(endsTimer); endsTimer = null; if (ends.value && ends.value !== ends.defaultValue) save({ ends: ends.value }, ends.closest('label')); };
   ends.oninput = ends.onchange = () => { clearTimeout(endsTimer); endsTimer = setTimeout(saveEnds, 1200); };
   ends.onblur = () => { if (endsTimer) saveEnds(); };
   $$('[data-role]', root).forEach((b) => (b.onclick = async () => {
+    const signed = b.getAttribute('aria-pressed') !== 'true';
     await working(b, b.closest('li'), async () => {
-      try { P.changeRequest = await call('signOff', { role: b.dataset.role, signed: b.getAttribute('aria-pressed') !== 'true' }); } catch (e) { showFlag(e.message); }
+      try { P.changeRequest = await call('signOff', { role: b.dataset.role, signed }); } catch (e) { showFlag(e.message); }
     });
     renderPanel();
   }));
@@ -1013,6 +1046,8 @@ async function startPanel() {
   document.addEventListener('visibilitychange', refreshPanel);
   window.addEventListener('focus', refreshPanel);
   setInterval(refreshPanel, 30000);
+  // The panel's own outline holds its place while it loads, so Jira resizes it once.
+  $('#loading').innerHTML = SKELETON_PANEL;
   P = await call('getPanel');
   if (P.now) TODAY = new Date(P.now).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
   $('#loading').remove();
@@ -1022,6 +1057,8 @@ async function startPanel() {
 
 // ---------- start ----------
 
+// The person using the page, so a button they may not use is shown that way before they click it.
+let ME = null;
 const within = (ms, what, promise) => Promise.race([promise, new Promise((_, no) => setTimeout(() => no(new Error(`${what} did not answer within ${ms / 1000} s`)), ms))]);
 
 async function start() {
@@ -1031,6 +1068,7 @@ async function start() {
     b.view.theme.enable().catch(() => {});
     const ctx = await b.view.getContext();
     isPanel = ctx?.extension?.type === 'jira:issuePanel';
+    ME = ctx?.accountId || null;
   }
   document.body.classList.toggle('in-panel', isPanel);
   try {

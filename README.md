@@ -36,6 +36,8 @@ what you see matches the video. Switch to live data from the ••• menu.
   - that a detour leaves and rejoins the route on either side of the works;
   - that it runs in both directions;
   - that it runs for the whole time the works do.
+  A problem is a published detour that ends before the works do: 3 of the 61 sites on the demo day. 57
+  more need a closer look, led by 38 works already under way with no detour that day, and 1 is covered.
   The list puts the problems first, and the map draws one line at a time with the detour's start and end.
 - **Turns the fix into a change request.** It fills in Jira Service Management's own fields: planned start and
   end, change type, risk and impact by the number of lines, implementation, backout and test plans. Each of
@@ -44,7 +46,9 @@ what you see matches the video. Switch to live data from the ••• menu.
   shorter, so narrowing it cannot make a check pass. The change's own fields (dates, risk, impact,
   implementation plan) follow the plan, and every note the app writes is internal.
 - **Keeps checking.** Every hour it compares each plan with what is published, and comments when a plan
-  starts or stops matching.
+  starts or stops matching. A change already live whose checks start failing is never moved back: its
+  work item gets a "Live, but the checks no longer pass" note for its teams, and the desk and the panel
+  show it in red.
   - **Status:** each plan's status is written to the work item, so JQL can find it, for example
     `detourCheck = failing` or `detourCheck = waiting`. The statuses are `unanswered`, `waiting`,
     `failing`, `ready`, `gone` (the roadworks left the feed) and `unknown` (the data can't vouch for it
@@ -78,6 +82,10 @@ what you see matches the video. Switch to live data from the ••• menu.
   they can change its plan. To restrict a
   team, create a group named `detour-check-ops`, `detour-check-scheduling`, `detour-check-passengers` or
   `detour-check-drivers`; only its members then sign off for that team.
+- **Who hears about it:** a team's group members are @mentioned in an internal note and added as
+  watchers whenever a plan needs them: when it is first answered, when a change clears the sign-offs,
+  when someone lowers it (Operations), and when the hourly check finds it no longer matches what is
+  published. Jira's own notifications (bell, email, mobile app) do the rest.
 - **Go-live gate:** added by setup. If the space's workflow later loses it, the page says so and offers
   **Add the go-live check**. It can also be added by hand under Rules → Validate details.
 - **MCP clients:** a site admin turns on Detour Check's tools under admin.atlassian.com → Apps → Sites →

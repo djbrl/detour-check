@@ -66,16 +66,19 @@ modules:
       name: Get disruption
       function: fn-get
       actionVerb: GET
-      description: Gets one disruption or change request in full, including affected
-        lines, nearby stops, published detours, messages at stops, sign-offs
-        and go-live checks.
+      description: Gets one roadworks site or change request in full, including
+        affected lines, nearby stops, published detours and their dates per
+        line, messages at stops, sign-offs and go-live checks. Given a place
+        that matches several sites, it lists them instead.
       inputs:
         disruption:
           title: Disruption or change request
           type: string
           required: false
-          description: A disruption id such as works-199167, or a change request
-            key such as NET-12. Leave empty on a work item to use it.
+          description: A place as the user said it (such as 177 Cours de la
+            Marne), a ref from list-disruptions such as works-199167, or a
+            change request key such as ROAD-1. Leave empty on a work item to use
+            it.
     - key: create-change-request
       name: Create change request
       function: fn-create
@@ -87,7 +90,8 @@ modules:
           title: Disruption
           type: string
           required: true
-          description: The disruption id, such as works-199167.
+          description: The roadworks ref from list-disruptions or get-disruption,
+            such as works-199167.
     - key: check-change-request
       name: Check change request
       function: fn-check
@@ -99,7 +103,7 @@ modules:
           title: Change request
           type: string
           required: false
-          description: The work item key, such as NET-12. Leave empty on a work item to
+          description: The work item key, such as ROAD-1. Leave empty on a work item to
             use it.
     - key: record-assessment
       name: Record assessment
@@ -112,7 +116,7 @@ modules:
           title: Change request
           type: string
           required: false
-          description: The work item key, such as NET-12. Leave empty on a work item to
+          description: The work item key, such as ROAD-1. Leave empty on a work item to
             use it.
         impact:
           title: Impact

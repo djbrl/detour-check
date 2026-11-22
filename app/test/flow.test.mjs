@@ -58,7 +58,7 @@ test('a plan goes from first answer to ready, with one Jira change request and i
   let view;
   for (const role of ROLES) view = await call('tick', { id: COVERED, role });
   assert.equal(view.changeRequest.readiness.ready, true);
-  assert.equal(jira.site.comments[key].length, 5, 'the changed answer and each sign-off are written on the work item');
+  assert.equal(jira.site.comments[key].length, 6, 'the teams are asked, then the changed answer and each sign-off are written on the work item');
   assert.deepEqual({ status: prop().status, ready: prop().ready, signed: prop().signed }, { status: 'ready', ready: true, signed: 4 }, 'JQL and the workflow validator see it is ready');
 
   const row = (await call('getDesk')).items.find((i) => i.id === COVERED);
@@ -128,7 +128,7 @@ test('Rovo lists problems, opens a plan and records its assessment on that plan 
 
   const rec = await recordAssessment({ changeRequest: made.key, impact: 'closed', assessment: 'Line 9 cannot pass.', passengerNotice: 'Stop Victoire is not served.' });
   assert.deepEqual(rec.recorded, { impact: 'Road closed: buses divert', assessment: true, passengerNotice: true });
-  assert.equal(jira.site.comments[made.key].length, 2);
+  assert.equal(jira.site.comments[made.key].length, 3, 'the teams were asked when the plan was answered');
 
   const check = await checkChangeRequest({ changeRequest: made.key });
   assert.equal(check.readyToGoLive, false);
@@ -276,6 +276,7 @@ test('the change fields follow the plan when it changes', async () => {
   await call('saveSettings', { project: 'NET' });
   const { changeRequest: { key } } = await call('answer', { id: PROBLEM, impact: 'closed' });
   const panel = { extension: { issue: { key } }, accountId: 'judge' };
+  assert.deepEqual(jira.site.issues[key].priority, { id: '2' }, 'five lines closed: High');
   await R.savePlan({ payload: { impact: 'none', reason: 'Works are on the pavement only' }, context: panel });
   const issue = jira.site.issues[key];
   const text = (id) => JSON.stringify(issue[id]);
@@ -285,6 +286,7 @@ test('the change fields follow the plan when it changes', async () => {
   // The fake site's Change risk is customfield_103 (Low is option 30) and Impact customfield_104 (Minor is 40).
   assert.deepEqual(issue.customfield_103, { id: '30' });
   assert.deepEqual(issue.customfield_104, { id: '40' });
+  assert.deepEqual(issue.priority, { id: '4' }, 'priority follows the risk: Low, not the space default');
   assert.match(text('description'), /Impact: No service impact/);
   assert.match(text('description'), /Why: Works are on the pavement only/);
   assert.match(text('customfield_107'), /change the impact in Detour Check/, 'the backout plan follows the impact');
@@ -336,4 +338,49 @@ test('lowering a plan takes a reason and a second person, and agents cannot lowe
   await R.savePlan({ payload: { impact: 'closed' }, context: panel('alice') });
   assert.equal((await goLive({ issue: { key } })).result, false);
   assert.equal((await R.getPanel({ context: panel('alice') })).changeRequest.lowered, null);
+});
+
+test('a change already live whose checks fail is flagged on the desk, the panel and the work item, never moved', async () => {
+  await call('saveSettings', { project: 'NET' });
+  const { changeRequest: { key } } = await call('answer', { id: PROBLEM, impact: 'closed' });
+  await hourly();
+  const heading = (c) => c.body.content[0].content[0].text;
+  const before = jira.site.comments[key].length;
+  assert.equal(heading(jira.site.comments[key].at(-1)), 'Go-live check: published information does not match this change');
+
+  // Someone moves it live anyway (an admin, or before the gate was added).
+  jira.site.issues[key].status = { name: 'Implementing', statusCategory: { key: 'indeterminate' } };
+  await hourly();
+  const note = jira.site.comments[key].at(-1);
+  assert.equal(jira.site.comments[key].length, before + 1);
+  assert.equal(heading(note), 'Live, but the checks no longer pass');
+  await hourly();
+  assert.equal(jira.site.comments[key].length, before + 1, 'said once');
+  assert.equal(jira.site.issues[key].status.name, 'Implementing', 'the work item is not moved');
+
+  const row = (await call('getDesk')).items.find((i) => i.id === PROBLEM);
+  assert.deepEqual([row.outlook.light, row.outlook.label, row.changeRequest.liveFailing], ['red', 'Live, failing', true]);
+  const panel = await R.getPanel({ context: { extension: { issue: { key } }, accountId: 'judge' } });
+  assert.equal(panel.changeRequest.liveFailing, true);
+  assert.equal((await call('getItem', { id: PROBLEM })).changeRequest.liveFailing, true);
+  assert.equal((await checkChangeRequest({ changeRequest: key })).warning, 'Live in Jira, but the checks no longer pass');
+});
+
+test('Rovo gets places, lines and plain words, and asks when a place matches several sites', async () => {
+  await call('saveSettings', { project: 'NET' });
+  const several = await getDisruption({ disruption: 'Rue Pasteur' });
+  assert.ok(several.several && several.matches.length === 3, 'three sites on Rue Pasteur');
+  assert.ok(several.matches.every((m) => m.place && m.dates && m.lines.every((l) => /^(Bus|Tram) /.test(l))));
+
+  await call('answer', { id: PROBLEM, impact: 'closed' });
+  await call('tick', { id: PROBLEM, role: 'ops' });
+  const one = await getDisruption({ disruption: '177 Cours de la Marne' });
+  assert.equal(one.ref, PROBLEM);
+  assert.equal(one.light, 'Problem');
+  assert.ok(one.detourByLine.length > 0 && one.detourByLine.every((l) => l.endsBeforeTheWorks === true && /27 Nov/.test(l.until)));
+  assert.match(one.worksUntil, /4 Dec/);
+  const text = JSON.stringify([one, await listDisruptions({}), await checkChangeRequest({ changeRequest: one.changeRequest.key })]);
+  assert.ok(!text.includes('judge'), 'no account ids');
+  assert.ok(!/"(impact|state|result|status)":"(closed|stops|failing|fail|pass|in-force)"/.test(text), 'no raw values');
+  assert.ok(!text.includes('"geo"'), 'no map geometry');
 });

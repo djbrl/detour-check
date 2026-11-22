@@ -38,6 +38,8 @@ function handle(path, init = {}, as) {
     } });
   }
   if (p === '/rest/api/3/groups/picker') return json(200, { groups: s.groups.map((name) => ({ name })) });
+  if (p === '/rest/api/3/group/member') return json(200, { values: (s.members?.[url.searchParams.get('groupname')] || []).map((accountId) => ({ accountId, displayName: accountId, active: true })) });
+  if ((m = p.match(/^\/rest\/api\/3\/issue\/([A-Z0-9_]+-\d+)\/watchers$/)) && method === 'POST') { ((s.watchers ||= {})[m[1]] ||= []).push(JSON.parse(init.body)); return json(204); }
   if (p === '/rest/api/3/myself') return json(200, { accountId: 'me', groups: { items: s.myGroups.map((name) => ({ name })) } });
   if (p === '/rest/api/3/project/search') {
     const q = (url.searchParams.get('query') || '').toLowerCase();
@@ -83,7 +85,8 @@ function handle(path, init = {}, as) {
   if ((m = p.match(/^\/rest\/api\/3\/issue\/createmeta\/([A-Z0-9_]+)\/issuetypes\/(\d+)$/))) {
     const type = s.projects[m[1]].types.find((t) => t.id === m[2]);
     const change = /change/i.test(type?.untranslatedName || type?.name || '');
-    return json(200, { fields: change ? s.fields.map((name, i) => ({ fieldId: `customfield_${100 + i}`, name, allowedValues: OPTIONS[name.toLowerCase()]?.map((value, j) => ({ id: `${i}${j}`, value })) })) : [] });
+    const priority = { fieldId: 'priority', name: 'Priorité', allowedValues: ['Critique', 'Élevée', 'Moyenne', 'Faible', 'Mineure'].map((name, j) => ({ id: String(j + 1), name })) };
+    return json(200, { fields: change ? [...s.fields.map((name, i) => ({ fieldId: `customfield_${100 + i}`, name, allowedValues: OPTIONS[name.toLowerCase()]?.map((value, j) => ({ id: `${i}${j}`, value })) })), priority] : [priority] });
   }
   if (p === '/rest/api/3/issue' && method === 'POST') {
     const { fields } = JSON.parse(init.body);
@@ -94,6 +97,11 @@ function handle(path, init = {}, as) {
     s.ids = { ...(s.ids || {}), [key]: id };
     s.issues[key] = fields;
     return json(201, { key, id });
+  }
+  // Only the one search Detour Check makes: its plans whose status is in progress.
+  if (p === '/rest/api/3/search/jql' && method === 'POST') {
+    const issues = Object.entries(s.issues).filter(([k, f]) => s.properties[`${k}/detour-check`] && f.status?.statusCategory?.key === 'indeterminate');
+    return json(200, { issues: issues.map(([key, f]) => ({ key, fields: { status: f.status } })) });
   }
   if ((m = p.match(/^\/rest\/api\/3\/issue\/([A-Z0-9_]+-\d+)\/properties\/([\w-]+)$/)) && method === 'PUT') { s.properties[`${m[1]}/${m[2]}`] = JSON.parse(init.body); return json(200); }
   if ((m = p.match(/^\/rest\/api\/3\/issue\/([A-Z0-9_]+-\d+)\/comment$/)) && method === 'POST') {

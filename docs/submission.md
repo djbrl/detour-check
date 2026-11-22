@@ -12,7 +12,9 @@ in Jira.
 
 **Inspiration.** In Bordeaux, the city publishes roadworks permits and the bus network publishes its detours,
 in two separate feeds. Nobody checks one against the other. On the day we froze for the demo, 61 roadworks
-sat on bus routes. Only 12 had a detour published, and on 3 of them the detour ended before the works did.
+sat on bus routes, and only 12 had a detour published. On 3 of them the detour ends before the works do:
+Detour Check flags those as problems. 57 more need a closer look, starting with 38 works already under way
+with no detour that day.
 At 177 Cours de la Marne, the detours for five bus lines end by 27 November, a week before the works do.
 
 **What it does.**
@@ -58,7 +60,7 @@ At 177 Cours de la Marne, the detours for five bus lines end by 27 November, a w
 | Time | Screen | Voice |
 |---|---|---|
 | 0:00 | A street with a barrier, then the app's tour, step 1 | "Bordeaux has 61 roadworks on bus routes today. The bus network has published a detour for 12 of them." |
-| 0:20 | Tour, steps 2 and 3 | "When the detour is missing, or ends too early, buses get stuck and riders wait at stops nobody serves. Detour Check finds those gaps from the city's open data." |
+| 0:20 | Tour, steps 2 and 3 | "When the detour is missing, or ends too early, buses get stuck and riders wait at stops nobody serves. Detour Check finds 3 problems and 57 roadworks to check in the city's open data." |
 | 0:40 | Desk, Problems, 177 Cours de la Marne; map, line 9, detour start and end | "Here: the works run until 4 December, but the detours for its five lines end by 27 November. Seven days with no detour." |
 | 1:10 | Click Yes; the change request opens in JSM with its fields | "One click opens a change request in Jira Service Management, with the dates, risk, impact and implementation plan already filled in." |
 | 1:35 | Rovo: "Handle the roadworks at 177 Cours de la Marne"; the notice is recorded on the work item | "Rovo writes the impact assessment and the passenger notice in French and English, and records them on the change." |

@@ -517,7 +517,8 @@ export function timelineOf(item, desk, plan = null, result = null) {
 // A traffic light with a short label, a sentence on what is happening, the problem if there is one,
 // and the next step. Before anyone has assessed a disruption it is judged on the worst case (buses
 // cannot get through): a published detour that falls short is a problem, while no detour at all may
-// only mean the road stays open, so that is something to check.
+// only mean the road stays open, so that is something to check. Works already under way with no
+// detour today are checked first: if buses cannot get through, they are stuck now.
 export function outlook(item, desk, plan = null, r = null) {
   const story = storyOf(item, desk);
   const assessed = !!plan?.impact;
@@ -554,6 +555,10 @@ export function outlook(item, desk, plan = null, r = null) {
     const [p, n] = gapOf(short[0], worst, desk);
     return { ...out('red', 'Falls short', p, n), more: gaps.filter((c) => c !== short[0]).map((c) => gapOf(c, worst, desk)[0]) };
   }
+  // Works under way with no detour running today on any of their bus lines. Most long permits leave
+  // the road open, so this is to check, but first: if the road is closed, buses are stuck now.
+  const inForce = item.starts <= desk.today && (!item.ends || item.ends >= desk.today);
+  if (gaps.length && inForce && (!t || t.from > desk.today)) return { ...out('amber', 'Under way, no detour', problem, next), underway: true };
   if (gaps.length) return out('amber', gaps[0].id === 'diversion' && !gaps[0].data.found ? 'No detour' : 'Partly covered', problem, next);
   return out('green', 'Covered', 'A detour is published for the whole works.', null);
 }

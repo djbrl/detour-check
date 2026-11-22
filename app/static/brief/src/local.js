@@ -48,10 +48,11 @@ const handlers = {
       const plan = cr && state.plans[cr.key];
       const r = cr && readiness(plan, item);
       return { ...summary(item, desk), outlook: outlook(item, desk, plan, r), changeRequest: cr ? { key: cr.key, state: r.state, failing: r.failing, pending: r.pending, signed: r.signed, roles: r.roles, ready: r.ready } : null };
-    }).sort((a, b) => RANK[a.outlook.light] - RANK[b.outlook.light] || a.starts.localeCompare(b.starts)),
+    }).sort((a, b) => RANK[a.outlook.light] - RANK[b.outlook.light] || !!b.outlook.underway - !!a.outlook.underway || a.starts.localeCompare(b.starts)),
   }),
   getItem: ({ id }) => { const v = state.crs[id] ? view(state.crs[id].key) : null; return { ...detail(desk.byId.get(id), desk), outlook: v?.outlook || outlook(desk.byId.get(id), desk), changeRequest: v }; },
   getSetup: () => ({ admin: true, project: state.settings.project || null, teamGroups: [], space: state.settings.project ? { found: true, name: 'Network Changes', serviceSpace: true, canCreate: true, issueType: 'Change', changeFields: ['Planned start', 'Planned end'], allFields: 9, gate: { workflow: 'Change workflow', guarded: ['Standard change', 'Emergency override', 'Approve', 'Implement'], missing: [] } } : null }),
+  getGate: () => handlers.getSetup().space?.gate || null,
   setUp: (p) => { const created = !p?.project && !state.settings.project; state.settings.project = p?.project || state.settings.project || 'ROAD'; return { project: state.settings.project, created, gate: { guarded: ['Standard change'], missing: [] } }; },
   saveSettings: (p) => Object.assign(state.settings, Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined))),
   createChangeRequest: ({ id }) => {

@@ -392,3 +392,36 @@ body.in-panel .badges { margin-top: 8px; }
 .why label { font-weight: 600; }
 .why textarea { font: inherit; padding: 6px 8px; border: 2px solid var(--line); border-radius: 3px; background: var(--bg); color: inherit; resize: vertical; }
 .why .actions { display: flex; gap: 8px; }
+
+/* A change already live whose checks now fail. */
+.live-fail { margin: 0 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--danger-bg); color: var(--danger); font-weight: 600; font-size: 13px; }
+
+/* Placeholders shaped like the card and the panel, so nothing moves when they are replaced. */
+.sk-steps, .sk-panel { display: grid; gap: 8px; }
+.sk-steps .skeleton, .sk-panel .skeleton { display: block; margin: 0; border-radius: 6px; }
+.sk-top { height: 18px; width: 40%; }
+.sk-title { height: 22px; width: 70%; }
+.sk-line { height: 16px; width: 55%; }
+.sk-badges { height: 24px; width: 45%; }
+.sk-cov { height: 84px; }
+.sk-block { height: 32px; }
+.sk-team { height: 30px; }
+.sk-btn { height: 36px; }
+.sk-steps { min-height: 330px; align-content: start; }
+
+/* Keyboard focus stays visible inside the scrolling list and on the chips. */
+.row:focus-visible, .cc:focus-visible, .seg button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.btn:focus-visible, .link:focus-visible, .badge:focus-visible, .teams button:focus-visible, .options button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Phones: long answers wrap instead of pushing the card wider than the screen. */
+@media (max-width: 480px) {
+  .confirm { flex-wrap: wrap; }
+  .confirm .btn, .notice .btn { white-space: normal; height: auto; min-height: 32px; padding: 6px 10px; text-align: left; }
+  .notice select { max-width: 100%; }
+  .head-actions { width: 100%; }
+  .head-actions .btn { white-space: normal; height: auto; min-height: 32px; }
+  .teams button { max-width: 110px; }
+  .cov-row { flex-wrap: wrap; gap: 0 12px; }
+  .panel-more { margin-left: 0; }
+  .menu-panel { width: min(260px, calc(100vw - 32px)); }
+}

@@ -62,29 +62,53 @@ async function mayCreateIn(project) {
 
 // What this site has for Detour Check, so a new install says what is missing instead of failing
 // on the first plan. Each part is checked on its own: one failure never hides the others.
-export async function setupStatus() {
+// Reading the gate means reading every workflow in the space, which takes seconds. With
+// `cachedGate` the last reading is returned (or none), and the page asks gateStatus() for a fresh
+// one after it has drawn the rest.
+export async function setupStatus({ cachedGate = false } = {}) {
   const settings = await getSettings();
-  const [admin, groups] = await Promise.all([isAdmin().catch(() => false), siteGroups()]);
-  const out = { admin, project: settings.project, teamGroups: Object.keys(ROLES).filter((r) => groups.includes(roleGroup(r))), space: null };
-  if (!settings.project) return out;
   const p = settings.project;
-  const [info, canCreate, meta] = await Promise.all([
-    jira(route`/rest/api/3/project/${p}`).catch(() => null),
-    mayCreateIn(p),
-    spaceMeta(p).catch((e) => ({ error: e.message })),
+  const [admin, groups, info, canCreate, meta, lastGate] = await Promise.all([
+    isAdmin().catch(() => false),
+    siteGroups(),
+    p ? jira(route`/rest/api/3/project/${p}`).catch(() => null) : null,
+    p ? mayCreateIn(p) : false,
+    p ? spaceMeta(p).catch((e) => ({ error: e.message })) : null,
+    p && cachedGate ? kvs.get(`gate:${p}`) : null,
   ]);
+  const out = { admin, project: p, teamGroups: Object.keys(ROLES).filter((r) => groups.includes(roleGroup(r))), space: null };
+  if (!p) return out;
   out.space = {
     found: !!info,
     name: info?.name || p,
     serviceSpace: info?.projectTypeKey === 'service_desk',
     canCreate,
     issueType: meta.name || null,
-    changeFields: meta.fields?.map((f) => f.name) || [],
+    changeFields: meta.fields?.filter((f) => f.fieldId !== 'priority').map((f) => f.name) || [],
     allFields: FIELD_NAMES.length,
   };
   // Only an admin can read workflows; anyone else sees the space without the gate's state.
-  if (admin && info && meta.issuetype) out.space.gate = await gateState(p, info.id, meta.issuetype).catch((e) => ({ error: e.message }));
+  if (admin && info && meta.issuetype) {
+    if (cachedGate) out.space.gate = lastGate || null;
+    else out.space.gate = await keptGate(p, gateState(p, info.id, meta.issuetype));
+  }
   return out;
+}
+
+// The gate's state as read now, kept for the next page load.
+async function keptGate(project, reading) {
+  const gate = await reading.catch((e) => ({ error: e.message }));
+  if (!gate.error) await kvs.set(`gate:${project}`, gate, { ttl: { value: 10, unit: 'MINUTES' } }).catch(() => null);
+  return gate;
+}
+
+export async function gateStatus() {
+  const settings = await getSettings();
+  const p = settings.project;
+  if (!p) return null;
+  const [admin, info, meta] = await Promise.all([isAdmin().catch(() => false), jira(route`/rest/api/3/project/${p}`).catch(() => null), spaceMeta(p).catch(() => null)]);
+  if (!admin || !info || !meta?.issuetype) return null;
+  return keptGate(p, gateState(p, info.id, meta.issuetype));
 }
 
 // ---------- one-click setup: a space for plans and the go-live gate in its workflow ----------
@@ -121,13 +145,13 @@ async function spaceWorkflows(project, projectId, planType) {
   need(plansWf, 'No workflow found for plans in this space');
   const statuses = [...(own.statuses || []), ...(rest?.statuses || [])];
   const all = [plansWf, ...(rest?.workflows || []).filter((w) => w.id !== plansWf.id)];
-  const out = [];
-  for (const w of all) {
+  // Each workflow's usage is one call, so they are asked at once.
+  const out = await Promise.all(all.map(async (w) => {
     const used = await jira(route`/rest/api/3/workflow/${w.id}/projectUsages`).catch(() => null);
     const shared = (used?.projects?.values || []).some((x) => String(x.id) !== String(projectId));
     const refs = new Set(w.statuses.map((x) => x.statusReference));
-    out.push({ w, shared, plans: w === plansWf, gated: gatedStatuses(statuses, refs, w === plansWf) });
-  }
+    return { w, shared, plans: w === plansWf, gated: gatedStatuses(statuses, refs, w === plansWf) };
+  }));
   return { statuses, workflows: out };
 }
 
@@ -228,11 +252,11 @@ export async function setUp({ project, create = false } = {}) {
   }
   const key = chosen;
   if (key !== (await getSettings()).project) await saveSettings({ project: key });
-  await kvs.delete(`meta:${key}`);
+  await kvs.delete(`meta2:${key}`);
   let gate;
   try {
     const [info, meta] = await Promise.all([jira(route`/rest/api/3/project/${key}`), spaceMeta(key)]);
-    gate = await installGate(key, info.id, meta.issuetype);
+    gate = await keptGate(key, installGate(key, info.id, meta.issuetype));
   } catch (e) { gate = { error: e.message }; }
   return { project: key, created: false, gate };
 }
@@ -381,6 +405,9 @@ function secondPerson(plan) {
   return ops && ops.by && ops.by !== plan.lowered.by ? null : 'Operations sign-off from someone other than the person who lowered the impact';
 }
 
+// A live change whose checks fail is a problem whatever else is true, and its label says why.
+export const liveOutlook = (o, liveFailing) => (liveFailing ? { ...o, light: 'red', label: 'Live, failing' } : o);
+
 export function readiness(plan, item, desk) {
   const result = item ? runChecks(plan, item, desk) : { state: 'not-found', checks: [], failing: 0 };
   const signed = Object.keys(ROLES).filter((r) => plan.signoffs?.[r]);
@@ -392,12 +419,15 @@ export function readiness(plan, item, desk) {
 
 // What one change request looks like to the page and to Rovo.
 // `plan` can be passed in when the caller has just read or saved it.
-export async function changeRequestView(key, desk, { full = true, plan = null } = {}) {
+// `live` says the work item is in a live status now (liveNow, liveKeys).
+export async function changeRequestView(key, desk, { full = true, plan = null, live = false } = {}) {
   plan ||= await getPlan(key);
   if (!plan) return null;
   const item = desk.byId.get(plan.item);
   const r = readiness(plan, item, desk);
+  const liveFailing = !!live && r.failing > 0;
   return {
+    live: !!live, liveFailing,
     key, item: plan.item, impact: plan.impact, impactLabel: plan.impact ? IMPACTS[plan.impact] : 'Not assessed yet',
     lines: plan.lines.map(lineInfo).filter(Boolean), starts: plan.starts, ends: plan.ends,
     startsLabel: dayLabel(plan.starts, desk.now), endsLabel: dayLabel(plan.ends, desk.now),
@@ -405,7 +435,7 @@ export async function changeRequestView(key, desk, { full = true, plan = null } 
     lowered: plan.lowered ? { reason: plan.lowered.reason, by: plan.lowered.by, at: plan.lowered.at } : null,
     signoffs: Object.entries(ROLES).map(([role, label]) => ({ role, label, ...(plan.signoffs?.[role] || {}) })),
     readiness: r,
-    outlook: item ? outlook(item, desk, plan, r) : null,
+    outlook: item ? liveOutlook(outlook(item, desk, plan, r), liveFailing) : null,
     disruption: item && full ? detail(item, desk) : null,
   };
 }
@@ -453,6 +483,10 @@ export async function savePlan(key, changes, loaded = null) {
   const signed = Object.keys(plan.signoffs || {}).length;
   // The first answer on a new plan is not news; changing a plan someone answered or approved is.
   const audit = changed.length && (signed || changed.some((k) => k !== 'impact') || plan.impact || why);
+  // Who to ask: everyone the plan now needs when it is first answered or its sign-offs were cleared,
+  // and Operations when it was lowered.
+  const firstAnswer = changed.includes('impact') && !plan.impact;
+  const ask = firstAnswer || (changed.length && signed) ? neededRoles(next) : why ? ['ops'] : [];
   if (!changed.length && !changes.notice && !why) return plan;
   const raw = await versioned(key, await kvs.get(`plan:${key}`));
   for (const k of changed) raw[k] = changes[k];
@@ -464,7 +498,7 @@ export async function savePlan(key, changes, loaded = null) {
   Object.assign(plan, raw, changed.length ? { signoffs: {} } : {});
   if (!raw.lowered) delete plan.lowered;
   await Promise.all([
-    audit ? addComment(key, signed ? 'Plan changed: sign-offs cleared' : 'Plan changed', said.join('\n')).catch((e) => console.warn(`Change comment on ${key} failed: ${e.message}`)) : null,
+    audit || firstAnswer ? addComment(key, firstAnswer && !audit ? 'Sign-off needed' : signed ? 'Plan changed: sign-offs cleared' : 'Plan changed', said.join('\n'), 'user', ask).catch((e) => console.warn(`Change comment on ${key} failed: ${e.message}`)) : null,
     publishStatus(key, plan, loaded),
   ]);
   if (changed.length) await syncFields(key, plan, loaded);
@@ -582,6 +616,36 @@ export async function publishStatus(key, plan, loaded = null) {
   } catch (e) { console.warn(`Status on ${key} not written: ${e.message}`); return null; }
 }
 
+// ---------- changes already live ----------
+// The go-live check only runs on a transition, so a change that went live and whose published
+// detour later falls short would pass unnoticed. Nothing moves it back; the desk, the panel and the
+// hourly check flag it instead. Live means a status the go-live check guards on the way in, or
+// In Progress in a space without Jira Service Management's change statuses.
+const LIVE_ELSEWHERE = /^(in progress|en cours)$/i;
+export const isLive = (status) => !!status?.name && (LIVE.test(status.name) || (status.statusCategory?.key === 'indeterminate' && LIVE_ELSEWHERE.test(status.name)));
+
+// Every plan whose work item is live now, in one search. Work items the person cannot see are left
+// out, and a failed search flags none rather than stopping the page from loading.
+export async function liveKeys(as = 'user') {
+  const out = new Set();
+  let nextPageToken;
+  try {
+    for (let page = 0; page < 5; page += 1) {
+      const res = await jira(route`/rest/api/3/search/jql`, { method: 'POST', body: JSON.stringify({ jql: 'detourCheck IS NOT EMPTY AND statusCategory = 4', fields: ['status'], maxResults: 100, ...(nextPageToken ? { nextPageToken } : {}) }) }, as);
+      for (const issue of res?.issues || []) if (isLive(issue.fields?.status)) out.add(issue.key);
+      nextPageToken = res?.nextPageToken;
+      if (!nextPageToken) break;
+    }
+  } catch (e) { console.warn(`Live changes not read: ${e.message}`); }
+  return out;
+}
+
+// One work item's status, for the panel and the card.
+export async function liveNow(key) {
+  if (!ISSUE_KEY.test(key || '')) return false;
+  try { return isLive((await jira(route`/rest/api/3/issue/${key}?fields=status`))?.fields?.status); } catch { return false; }
+}
+
 // The workflow validator: a change from Detour Check moves on only when its plan is ready now,
 // computed here from storage and the published data, never from anything an editor can set.
 // Unsure means no. Work items Detour Check did not open are not its business.
@@ -648,6 +712,9 @@ const doc = (paragraphs) => ({ type: 'doc', version: 1, content: paragraphs });
 const bullets = (items) => ({ type: 'bulletList', content: items.map((t) => ({ type: 'listItem', content: [para(t)] })) });
 // "Bus 1, 31, G · Tram B": how a rider would name the lines.
 const linesText = (lines) => [['BUS', 'Bus'], ['TRAM', 'Tram']].map(([m, word]) => { const ls = lines.filter((l) => (l.mode === 'TRAM') === (m === 'TRAM')); return ls.length ? `${word} ${ls.map((l) => l.short).join(', ')}` : ''; }).filter(Boolean).join(' · ');
+const rangeText = (a, b, now) => (a && b && a.slice(0, 4) !== b.slice(0, 4)
+  ? `${shortDay(a, `${b.slice(0, 4)}-01-01`)} → ${shortDay(b, `${a.slice(0, 4)}-01-01`)}`
+  : `${shortDay(a, now)} → ${shortDay(b, now)}`);
 const shortDay = (iso, now) => (iso ? new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: iso.slice(0, 4) !== new Date(now).toISOString().slice(0, 4) ? 'numeric' : undefined, timeZone: 'Europe/Paris' }) : 'further notice');
 
 // The fields a plan fills, by their names in Jira Service Management.
@@ -656,7 +723,7 @@ const FIELD_NAMES = ['planned start', 'planned end', 'change type', 'change risk
 // A space's issue type for plans and its change fields rarely change, and reading them costs two
 // Jira calls, so they are kept for a day.
 async function spaceMeta(project) {
-  const cached = await kvs.get(`meta:${project}`);
+  const cached = await kvs.get(`meta2:${project}`);
   if (cached?.name) return cached;
   const meta = await jira(route`/rest/api/3/issue/createmeta/${project}/issuetypes`);
   const types = (meta.issueTypes || meta.values || []).filter((t) => !t.subtask);
@@ -669,11 +736,11 @@ async function spaceMeta(project) {
   let fields = [];
   try {
     const f = await jira(route`/rest/api/3/issue/createmeta/${project}/issuetypes/${issuetype}?maxResults=200`);
-    fields = (f.fields || f.values || []).filter((x) => FIELD_NAMES.includes(String(x.name).toLowerCase()))
-      .map((x) => ({ fieldId: x.fieldId, name: x.name, allowedValues: x.allowedValues?.map((o) => ({ id: o.id, value: o.value })) }));
+    fields = (f.fields || f.values || []).filter((x) => FIELD_NAMES.includes(String(x.name).toLowerCase()) || x.fieldId === 'priority')
+      .map((x) => ({ fieldId: x.fieldId, name: x.fieldId === 'priority' ? 'priority' : x.name, allowedValues: x.allowedValues?.map((o) => ({ id: o.id, value: o.value ?? o.name })) }));
   } catch { /* the plan is created without change fields */ }
   const out = { issuetype, name: type.name.replace(/^\[system\] /i, ''), fields };
-  await kvs.set(`meta:${project}`, out, { ttl: { value: 1, unit: 'DAYS' } });
+  await kvs.set(`meta2:${project}`, out, { ttl: { value: 1, unit: 'DAYS' } });
   return out;
 }
 
@@ -701,12 +768,21 @@ function changeFields(fields, item, s, desk, plan = defaultPlan(item)) {
   // "MÉCA", "MÉCA (Paludate)" and "MECA (Paludate)" are one stop to a reader.
   const base = (name) => name.replace(/\s*\(.*\)\s*$/, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   const stopNames = [...new Map(item.stops.map((x) => [base(x.name), x.name.replace(/\s*\(.*\)\s*$/, '')])).values()].slice(0, 3);
-  if (starts) set('planned start', 'plannedStart', parisDateTime(starts, '05:00'));
+  // Noon in Paris is the same calendar day in every time zone a viewer is likely to be in.
+  if (starts) set('planned start', 'plannedStart', parisDateTime(starts, '12:00'));
   if (ends) set('planned end', 'plannedEnd', parisDateTime(ends, '23:59'));
   option('change type', /^normal$/i);
   option('change risk', n >= 4 ? /^high$/i : n >= 2 ? /^medium$/i : /^low$/i);
   option('impact', n >= 4 ? /^significant/i : n >= 2 ? /^moderate/i : /^minor/i);
   option('change reason', /^maintenance$/i);
+  // Priority follows the risk. Its names are translated, so it goes by place in the list, which runs
+  // from highest to lowest.
+  const prio = fields.find((f) => f.fieldId === 'priority');
+  if (prio?.allowedValues?.length >= 3) {
+    const list = prio.allowedValues;
+    const at = Math.min(list.length - 1, Math.round(((n >= 4 ? 1 : n >= 2 ? 2 : 3) / 4) * (list.length - 1)));
+    values.priority = { id: list[at].id };
+  }
   // Plain paragraphs: these text fields show list markup as literal asterisks.
   const steps = plan.impact === 'none'
     ? ['Operations: confirm buses are not affected']
@@ -724,9 +800,11 @@ function changeFields(fields, item, s, desk, plan = defaultPlan(item)) {
     : plan.impact === 'narrowed'
       ? 'If buses cannot get through: divert them, publish a detour and tell riders.'
       : `If the works end before ${until}: withdraw the detour and notices, restore timetables, tell drivers.`)]));
+  // Works already under way can't be checked "before" their start, so the test is today's.
+  const begun = starts && starts <= (desk.today || String(desk.now).slice(0, 10));
   set('test plan', null, doc([para(plan.impact === 'none'
-    ? `Operations confirms buses run normally past the works on ${shortDay(starts, desk.now)}.`
-    : `Detour Check shows every check green before ${shortDay(starts, desk.now)}.`)]));
+    ? (begun ? 'Operations confirms buses run normally past the works.' : `Operations confirms buses run normally past the works on ${shortDay(starts, desk.now)}.`)
+    : begun ? 'Detour Check shows every check green.' : `Detour Check shows every check green before ${shortDay(starts, desk.now)}.`)]));
   values.description = description(item, s, desk, plan);
   // The plain text of each text field, to tell later whether someone rewrote it in Jira.
   const text = Object.fromEntries(Object.entries(values).filter(([, v]) => v?.type === 'doc').map(([id, v]) => [id, textOf(v)]));
@@ -746,7 +824,7 @@ function description(item, s, desk, plan) {
   const t = timelineOf(item, desk);
   return doc([bullets([
     `Where: ${item.title}`,
-    `When: ${shortDay(starts, desk.now)} → ${shortDay(ends, desk.now)}`,
+    `When: ${rangeText(starts, ends, desk.now)}`,
     `Lines: ${linesText(s.lines)}`,
     `Published detour: ${t.detour ? `${shortDay(t.detour.from, desk.now)} → ${shortDay(t.detour.to, desk.now)}` : 'none'}`,
     `Impact: ${plan.impact ? IMPACTS[plan.impact] : 'not answered yet'}${plan.directions === 'one' && !['none', 'narrowed'].includes(plan.impact) ? ', one way' : ''}`,
@@ -806,7 +884,14 @@ async function openChangeRequest(itemId, item, settings, desk, accountId, initia
     kvs.set(`written:${created.key}`, ids === extra.ids ? extra.text : { description: extra.text.description }),
   ]);
   // A first answer that lowers the impact says why on the work item, like any later change would.
-  if (initial.lowered) await addComment(created.key, 'Impact lowered', `${IMPACTS[initial.impact]}\nReason: ${initial.lowered.reason}\nOperations must sign off as someone else.`).catch((e) => console.warn(`Lowering note on ${created.key} failed: ${e.message}`));
+  // The teams hear about a plan as soon as it has an answer. A first answer that lowers the impact
+  // says why, like any later change would.
+  if (initial.impact) {
+    const said = initial.lowered
+      ? `${IMPACTS[initial.impact]}\nReason: ${initial.lowered.reason}\nOperations must sign off as someone else.`
+      : `${item.title}: ${IMPACTS[initial.impact]}.\nEach team below signs off once its part is done.`;
+    await addComment(created.key, initial.lowered ? 'Impact lowered: sign-off needed' : 'Sign-off needed', said, 'user', neededRoles(initial)).catch((e) => console.warn(`First note on ${created.key} failed: ${e.message}`));
+  }
   const view = { ...plan, signoffs: {} };
   // The marker shows the panel; if writing it fails, the desk tries again on its next load.
   const status = await publishStatus(created.key, view, loaded);
@@ -819,18 +904,60 @@ async function openChangeRequest(itemId, item, settings, desk, accountId, initia
 // Bumped when the status property's shape changes, so older plans get the current one once.
 export const MARKED = 'detour-check-status';
 
-export async function addComment(key, heading, text, as = 'user') {
+// `ask` names the teams whose people should hear about it: each is @mentioned in the note and
+// added as a watcher, so Jira's own notifications (bell, email, mobile) reach them.
+export async function addComment(key, heading, text, as = 'user', ask = []) {
   need(ISSUE_KEY.test(key), 'Unknown work item key');
-  const body = doc([para(heading, [{ type: 'strong' }]), ...String(text || '').split(/\n{1,}/).filter(Boolean).slice(0, 40).map((t) => para(t))]);
+  const asked = ask.length ? await askTeams(key, ask) : [];
+  const body = doc([para(heading, [{ type: 'strong' }]), ...String(text || '').split(/\n{1,}/).filter(Boolean).slice(0, 40).map((t) => para(t)), ...asked]);
   // Internal notes in a service space: a public comment there is a reply that emails the customer.
   return jira(route`/rest/api/3/issue/${key}/comment`, { method: 'POST', body: JSON.stringify({ body, properties: [{ key: 'sd.public.comment', value: { internal: true } }] }) }, as);
 }
 
+// ---------- asking each team ----------
+// A team's people are the members of its group ("detour-check-ops" and so on). A team without a
+// group has no one to ask by name, so its line is left out and the note reads as before.
+const peopleCache = new Map();
+async function teamPeople(role) {
+  const hit = peopleCache.get(role);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.people;
+  let people = [];
+  if ((await siteGroups()).includes(roleGroup(role))) {
+    try {
+      const page = await jira(route`/rest/api/3/group/member?groupname=${roleGroup(role)}&maxResults=10`, {}, 'app');
+      people = (page?.values || []).filter((u) => u.active !== false && u.accountId).map((u) => ({ id: u.accountId, name: u.displayName || 'someone' }));
+    } catch (e) { console.warn(`Members of ${roleGroup(role)} not read: ${e.message}`); }
+  }
+  peopleCache.set(role, { at: Date.now(), people });
+  return people;
+}
+
+// One line per team that has people, mentioning each of them, and each added as a watcher.
+// Nothing here can stop the note itself from being written.
+async function askTeams(key, roles) {
+  const lines = [];
+  const watchers = new Set();
+  for (const role of [...new Set(roles)].filter((r) => ROLES[r])) {
+    const people = await teamPeople(role).catch(() => []);
+    if (!people.length) continue;
+    people.forEach((p) => watchers.add(p.id));
+    const mentions = people.flatMap((p, i) => [...(i ? [{ type: 'text', text: ' ' }] : []), { type: 'mention', attrs: { id: p.id, text: `@${p.name}` } }]);
+    lines.push({ type: 'paragraph', content: [{ type: 'text', text: `${ROLES[role]}: `, marks: [{ type: 'strong' }] }, ...mentions] });
+  }
+  await Promise.all([...watchers].map((id) => jira(route`/rest/api/3/issue/${key}/watchers`, { method: 'POST', body: JSON.stringify(id) }, 'app')
+    .catch((e) => console.warn(`Watcher on ${key} not added: ${e.message}`))));
+  return lines;
+}
+
+// Which teams a plan needs: Operations alone for "no effect", every team otherwise.
+const neededRoles = (plan) => (plan.impact === 'none' ? ['ops'] : Object.keys(ROLES));
+
 // ---------- the hourly go-live check ----------
 // Comments on a change request when its published information starts or stops matching the plan,
-// so the change's own history shows when it went wrong and when it was fixed.
+// so the change's own history shows when it went wrong and when it was fixed. A change already live
+// whose checks fail is said so plainly, once, and its teams are asked; it is never moved back.
 export async function checkAll() {
-  const loaded = await currentDesk();
+  const [loaded, live] = await Promise.all([currentDesk(), liveKeys('app')]);
   const { desk } = loaded;
   const trusted = verifiable(loaded);
   const results = [];
@@ -855,13 +982,16 @@ export async function checkAll() {
     if (!trusted || !item) continue;
     const r = readiness(plan, item, desk);
     const failing = r.checks.filter((c) => c.state === 'fail').map((c) => c.id).sort().join(',');
-    if (failing !== (last?.failing ?? plan.lastFailing ?? '')) {
+    const liveFailing = !!failing && live.has(key);
+    const moved = failing !== (last?.failing ?? plan.lastFailing ?? '');
+    if (moved || (liveFailing && !last?.live)) {
       const text = failing
         ? r.checks.filter((c) => c.state === 'fail').map((c) => `${c.label}: ${c.evidence}`).join('\n')
         : 'Every published check now matches the plan.';
-      try { await addComment(key, failing ? 'Go-live check: published information does not match this change' : 'Go-live check passed', text, 'app'); } catch (e) { console.warn(`Comment on ${key} failed: ${e.message}`); continue; }
-      await kvs.set(`check:${key}`, { failing, at: new Date().toISOString() });
-    }
+      const heading = liveFailing ? 'Live, but the checks no longer pass' : failing ? 'Go-live check: published information does not match this change' : 'Go-live check passed';
+      try { await addComment(key, heading, text, 'app', failing ? neededRoles(plan) : []); } catch (e) { console.warn(`Comment on ${key} failed: ${e.message}`); continue; }
+      await kvs.set(`check:${key}`, { failing, live: liveFailing, at: new Date().toISOString() });
+    } else if (!!last?.live !== liveFailing && last) await kvs.set(`check:${key}`, { ...last, live: liveFailing });
     results.push({ key, state: r.state });
   }
   return results;

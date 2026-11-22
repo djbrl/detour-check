@@ -34,6 +34,16 @@ test('works in force on a bus route with no published detour fail the detour che
   assert.equal(check?.state, 'fail');
 });
 
+test('works under way with no detour today are to check, labelled so; only a detour that falls short is a problem', () => {
+  const noDetour = lights.filter(([i, o]) => !o.timeline?.detour && i.lines.some((id) => !/^T/.test(id)));
+  const now = noDetour.filter(([i]) => i.starts <= desk.today && (!i.ends || i.ends >= desk.today));
+  const later = noDetour.filter(([i]) => i.starts > desk.today);
+  assert.ok(now.length && later.length, 'the demo day has both');
+  for (const [i, o] of now) assert.deepEqual([i.id, o.light, o.label, o.underway], [i.id, 'amber', 'Under way, no detour', true]);
+  for (const [i, o] of later) assert.deepEqual([i.id, o.light, o.underway], [i.id, 'amber', undefined]);
+  assert.ok(lights.filter(([, o]) => o.light === 'red').every(([, o]) => o.label === 'Falls short'));
+});
+
 test('"no effect on buses" needs a reason and Operations from someone else', () => {
   const item = desk.byId.get('works-197100');
   const lowered = { reason: 'Pavement only', by: 'alice' };
