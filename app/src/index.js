@@ -41,39 +41,47 @@ const resolver = new Resolver();
 
 resolver.define('getDesk', async () => deskList());
 
-// One disruption as the desk's card shows it.
-async function itemView(id) {
+// One disruption as the desk's card shows it. After an answer or a sign-off the card already has
+// the map, so only what changed goes back.
+async function itemView(id, { slim = false, desk = null, key = null, plan = null } = {}) {
   need(ITEM.test(id), 'Unknown disruption');
-  const { desk } = await currentDesk();
+  desk ||= (await currentDesk()).desk;
   const item = desk.byId.get(id);
   need(item, 'That disruption is no longer on the desk');
-  const cr = await kvs.get(`cr:${id}`);
-  const view = cr ? await changeRequestView(cr.key, desk) : null;
-  return { ...detail(item, desk), outlook: view?.outlook || outlook(item, desk), changeRequest: view };
+  key ||= (await kvs.get(`cr:${id}`))?.key;
+  const view = key ? await changeRequestView(key, desk, { full: false, plan }) : null;
+  return { ...(slim ? { id } : detail(item, desk)), outlook: view?.outlook || outlook(item, desk), changeRequest: view };
 }
+
+// Logs how long each call from the page takes, next to the Jira calls inside it.
+const timed = (name, fn) => async (req) => {
+  const t0 = Date.now();
+  try { return await fn(req); } finally { console.log(`timing ${name} ${Date.now() - t0}ms`); }
+};
 
 resolver.define('getItem', async ({ payload }) => itemView(str(payload?.id, 40)));
 
 // The card's first step. Answering opens the plan in Jira if there is none yet, so nobody has to
 // "create a change request" before they can say what the works mean.
-resolver.define('answer', async ({ payload, context }) => {
+resolver.define('answer', timed('answer', async ({ payload, context }) => {
   const id = str(payload?.id, 40);
   const impact = str(payload?.impact, 20);
   need(IMPACTS[impact], 'Unknown answer');
-  const cr = await createChangeRequest(id, context.accountId, { impact });
-  if (!cr.created) await savePlan(cr.key, { impact });
-  return itemView(id);
-});
+  // The desk and the plan are read once and handed along, since each read is a round trip.
+  const loaded = await currentDesk();
+  const cr = await createChangeRequest(id, context.accountId, { impact }, loaded);
+  const plan = cr.created ? cr.plan : await savePlan(cr.key, { impact });
+  return itemView(id, { slim: true, desk: loaded.desk, key: cr.key, plan });
+}));
 
-resolver.define('tick', async ({ payload, context }) => {
+resolver.define('tick', timed('tick', async ({ payload, context }) => {
   const id = str(payload?.id, 40);
   need(ITEM.test(id), 'Unknown disruption');
   const cr = await kvs.get(`cr:${id}`);
   need(cr, 'Answer whether buses can get through first');
-  const { desk } = await currentDesk();
-  await signOff(cr.key, str(payload?.role, 20), context.accountId, !!payload?.undo, desk);
-  return itemView(id);
-});
+  const plan = await signOff(cr.key, str(payload?.role, 20), context.accountId, !!payload?.undo);
+  return itemView(id, { slim: true, key: cr.key, plan });
+}));
 
 resolver.define('saveSettings', async ({ payload }) => saveSettings({ mode: payload?.mode, project: payload?.project }));
 resolver.define('getSettings', async () => getSettings());
@@ -96,11 +104,11 @@ resolver.define('savePlan', async ({ payload, context }) => {
   return changeRequestView(panelKey(context), desk);
 });
 
-resolver.define('signOff', async ({ payload, context }) => {
+resolver.define('signOff', timed('signOff', async ({ payload, context }) => {
+  const plan = await signOff(panelKey(context), str(payload?.role, 20), context.accountId, !!payload?.undo);
   const { desk } = await currentDesk();
-  await signOff(panelKey(context), str(payload?.role, 20), context.accountId, !!payload?.undo, desk);
-  return changeRequestView(panelKey(context), desk);
-});
+  return changeRequestView(panelKey(context), desk, { plan });
+}));
 
 export const handler = resolver.getDefinitions();
 

@@ -36,7 +36,6 @@ function setImpact(plan, impact) {
 function sign(plan, role, undo) {
   need(ROLES[role], 'Unknown sign-off');
   need(plan.impact, 'Answer whether buses can get through first');
-  need(undo || !runChecks(plan, desk.byId.get(plan.item), desk).failing, 'Fix the failing checks before signing off');
   if (undo) delete plan.signoffs[role]; else plan.signoffs[role] = { by: null, at: new Date().toISOString() };
 }
 const panelKey = () => new URLSearchParams(location.search).get('panel') || Object.keys(state.plans)[0];

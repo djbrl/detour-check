@@ -110,8 +110,9 @@ export function readiness(plan, item, desk) {
 }
 
 // What one change request looks like to the page and to Rovo.
-export async function changeRequestView(key, desk) {
-  const plan = await getPlan(key);
+// `plan` can be passed in when the caller has just read or saved it.
+export async function changeRequestView(key, desk, { full = true, plan = null } = {}) {
+  plan ||= await getPlan(key);
   if (!plan) return null;
   const item = desk.byId.get(plan.item);
   const r = readiness(plan, item, desk);
@@ -123,7 +124,7 @@ export async function changeRequestView(key, desk) {
     signoffs: Object.entries(ROLES).map(([role, label]) => ({ role, label, ...(plan.signoffs?.[role] || {}) })),
     readiness: r,
     outlook: item ? outlook(item, desk, plan, r) : null,
-    disruption: item ? detail(item, desk) : null,
+    disruption: item && full ? detail(item, desk) : null,
   };
 }
 
@@ -155,34 +156,43 @@ export async function savePlan(key, changes) {
 // Who may sign off for a team: members of the site group "detour-check-<team>" when the site has
 // one, otherwise anyone who can edit the change request.
 const roleGroup = (role) => `detour-check-${role}`;
+const groupCache = { at: 0, names: [] };
+async function siteGroups() {
+  if (Date.now() - groupCache.at < 5 * 60 * 1000) return groupCache.names;
+  let names = [];
+  try { names = (await jira(route`/rest/api/3/groups/picker?query=detour-check&maxResults=20`, {}, 'app'))?.groups?.map((g) => g.name) || []; } catch { /* no group lookup: fall back */ }
+  Object.assign(groupCache, { at: Date.now(), names });
+  return names;
+}
 async function maySignOff(key, role) {
-  let groups = [];
-  try { groups = (await jira(route`/rest/api/3/groups/picker?query=detour-check&maxResults=20`, {}, 'app'))?.groups?.map((g) => g.name) || []; } catch { /* no group lookup: fall back */ }
+  // Both answers are asked for at once; only one of them decides.
+  const [groups, perms] = await Promise.all([
+    siteGroups(),
+    jira(route`/rest/api/3/mypermissions?issueKey=${key}&permissions=EDIT_ISSUES`),
+  ]);
   if (groups.includes(roleGroup(role))) {
     const me = await jira(route`/rest/api/3/myself?expand=groups`);
     return (me?.groups?.items || []).some((g) => g.name === roleGroup(role));
   }
-  const perms = await jira(route`/rest/api/3/mypermissions?issueKey=${key}&permissions=EDIT_ISSUES`);
   return !!perms?.permissions?.EDIT_ISSUES?.havePermission;
 }
 
-export async function signOff(key, role, accountId, undo = false, desk = null) {
+// A sign-off says a team has done its part. A plan only counts as ready once the checks pass too,
+// so a team can sign off while, say, Operations is still extending the detour.
+export async function signOff(key, role, accountId, undo = false) {
   need(ROLES[role], 'Unknown sign-off');
   const plan = await getPlan(key);
   need(plan, 'That work item is not a change request from the desk');
   need(plan.impact, 'Answer whether buses can get through first');
   need(await maySignOff(key, role), `You cannot sign off for ${ROLES[role]} on ${key}`);
-  if (!undo && desk) {
-    const item = desk.byId.get(plan.item);
-    need(!item || !runChecks(plan, item, desk).failing, 'Fix the failing checks before signing off');
-  }
   plan.signoffs ||= {};
   if (undo) delete plan.signoffs[role];
   else plan.signoffs[role] = { by: accountId || null, at: new Date().toISOString() };
-  await kvs.set(`plan:${key}`, plan);
   // The work item's own history shows who signed off for which team.
-  try { await addComment(key, undo ? `${ROLES[role]} sign-off withdrawn` : `${ROLES[role]} signed off`, `Impact: ${IMPACTS[plan.impact]}.`); } catch (e) { console.warn(`Sign-off comment on ${key} failed: ${e.message}`); }
-  return plan.signoffs;
+  const comment = addComment(key, undo ? `${ROLES[role]} sign-off withdrawn` : `${ROLES[role]} signed off`, `Impact: ${IMPACTS[plan.impact]}.`)
+    .catch((e) => console.warn(`Sign-off comment on ${key} failed: ${e.message}`));
+  await Promise.all([kvs.set(`plan:${key}`, plan), comment]);
+  return plan;
 }
 
 // ---------- Jira ----------
@@ -204,10 +214,27 @@ const bullets = (items) => ({ type: 'bulletList', content: items.map((t) => ({ t
 const linesText = (lines) => [['BUS', 'Bus'], ['TRAM', 'Tram']].map(([m, word]) => { const ls = lines.filter((l) => (l.mode === 'TRAM') === (m === 'TRAM')); return ls.length ? `${word} ${ls.map((l) => l.short).join(', ')}` : ''; }).filter(Boolean).join(' · ');
 const shortDay = (iso, now) => (iso ? new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: iso.slice(0, 4) !== new Date(now).toISOString().slice(0, 4) ? 'numeric' : undefined, timeZone: 'Europe/Paris' }) : 'further notice');
 
-async function issueTypeFor(project) {
+// The fields a plan fills, by their names in Jira Service Management.
+const FIELD_NAMES = ['planned start', 'planned end', 'change type', 'change risk', 'impact', 'change reason', 'implementation plan', 'backout plan', 'test plan'];
+
+// A space's issue type for plans and its change fields rarely change, and reading them costs two
+// Jira calls, so they are kept for a day.
+async function spaceMeta(project) {
+  const cached = await kvs.get(`meta:${project}`);
+  if (cached) return cached;
   const meta = await jira(route`/rest/api/3/issue/createmeta/${project}/issuetypes`);
   const types = (meta.issueTypes || meta.values || []).filter((t) => !t.subtask);
-  return (types.find((t) => /^(\[system\] )?change$/i.test(t.name)) || types.find((t) => /^task$/i.test(t.name)) || types[0])?.id;
+  const issuetype = (types.find((t) => /^(\[system\] )?change$/i.test(t.name)) || types.find((t) => /^task$/i.test(t.name)) || types[0])?.id;
+  need(issuetype, `No issue type found in ${project}`);
+  let fields = [];
+  try {
+    const f = await jira(route`/rest/api/3/issue/createmeta/${project}/issuetypes/${issuetype}?maxResults=200`);
+    fields = (f.fields || f.values || []).filter((x) => FIELD_NAMES.includes(String(x.name).toLowerCase()))
+      .map((x) => ({ fieldId: x.fieldId, name: x.name, allowedValues: x.allowedValues?.map((o) => ({ id: o.id, value: o.value })) }));
+  } catch { /* the plan is created without change fields */ }
+  const out = { issuetype, fields };
+  await kvs.set(`meta:${project}`, out, { ttl: { value: 1, unit: 'DAYS' } });
+  return out;
 }
 
 // Paris wall-clock time as Jira's datetime format, with the right winter or summer offset.
@@ -220,12 +247,7 @@ function parisDateTime(date, time) {
 
 // Jira Service Management's own change fields, found by name because their ids differ per site.
 // Anything the space does not have is skipped.
-async function changeFields(project, issuetype, item, s, desk) {
-  let fields = [];
-  try {
-    const meta = await jira(route`/rest/api/3/issue/createmeta/${project}/issuetypes/${issuetype}?maxResults=200`);
-    fields = meta.fields || meta.values || [];
-  } catch { return { values: {}, ids: {} }; }
+function changeFields(fields, item, s, desk) {
   const byName = (n) => fields.find((f) => String(f.name).toLowerCase() === n);
   const values = {};
   const ids = {};
@@ -254,9 +276,9 @@ async function changeFields(project, issuetype, item, s, desk) {
   return { values, ids };
 }
 
-export async function createChangeRequest(itemId, accountId, initial = {}) {
+export async function createChangeRequest(itemId, accountId, initial = {}, loaded = null) {
   need(ITEM.test(itemId), 'Unknown disruption');
-  const { settings, desk } = await currentDesk();
+  const { settings, desk } = loaded || await currentDesk();
   need(settings.project, 'Choose a Jira space for change requests first, on the Detour Check page');
   const existing = await kvs.get(`cr:${itemId}`);
   if (existing) return { ...existing, created: false };
@@ -280,9 +302,8 @@ export async function createChangeRequest(itemId, accountId, initial = {}) {
 async function openChangeRequest(itemId, item, settings, desk, accountId, initial) {
   const s = summary(item, desk);
   const lineList = linesText(s.lines);
-  const issuetype = await issueTypeFor(settings.project);
-  need(issuetype, `No issue type found in ${settings.project}`);
-  const extra = await changeFields(settings.project, issuetype, item, s, desk);
+  const { issuetype, fields } = await spaceMeta(settings.project);
+  const extra = changeFields(fields, item, s, desk);
   const t = timelineOf(item, desk);
   const post = (more) => jira(route`/rest/api/3/issue`, {
     method: 'POST',
@@ -306,11 +327,10 @@ async function openChangeRequest(itemId, item, settings, desk, accountId, initia
   let created;
   let ids = extra.ids;
   try { created = await post(extra.values); } catch (e) { console.warn(`Create with change fields failed, retrying without: ${e.message}`); created = await post({}); ids = {}; }
-  await markIssue(created.key);
   const cr = { key: created.key, at: new Date().toISOString(), by: accountId || null, marked: 'detour-check' };
-  await kvs.set(`plan:${created.key}`, { ...defaultPlan(item), ...initial, signoffs: {}, fields: ids });
-  await kvs.set(`cr:${itemId}`, cr);
-  return { ...cr, created: true };
+  const plan = { ...defaultPlan(item), ...initial, signoffs: {}, fields: ids };
+  await Promise.all([markIssue(created.key), kvs.set(`plan:${created.key}`, plan), kvs.set(`cr:${itemId}`, cr)]);
+  return { ...cr, created: true, plan };
 }
 
 // The issue panel shows only on work items carrying this property (see the manifest's display condition).

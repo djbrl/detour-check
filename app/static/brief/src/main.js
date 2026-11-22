@@ -144,34 +144,67 @@ function coverage(o) {
   </div>`;
 }
 
-const ANSWERS = [['closed', 'No'], ['stops', 'Partly'], ['narrowed', 'Slower'], ['none', 'Yes']];
-const ANSWER_HINT = { closed: 'Road closed, buses detour', stops: 'Some stops skipped', narrowed: 'Lane narrowed, delays', none: 'No effect' };
+// What the works do to buses, in the words the card uses.
+const ANSWERS = [['closed', 'Road closed, buses detour'], ['stops', 'Buses skip some stops'], ['narrowed', 'Buses slowed, lane narrowed'], ['none', 'No effect on buses']];
+const ANSWER_TEXT = Object.fromEntries(ANSWERS);
 const CHECK_SHORT = { diversion: 'Detour', directions: 'Both ways', dates: 'Whole time', notice: 'Riders told' };
 const CHECK_MARK = { pass: ['ok', '✓'], fail: ['bad', '✕'], pending: ['wait', '◷'] };
 const TEAMS = [['ops', 'Operations'], ['scheduling', 'Scheduling'], ['passengers', 'Passenger info'], ['drivers', 'Drivers']];
 
+// What the published information says about the works, and the answer that goes with it, so the
+// first step is a yes or no on something the person can see.
+function published(o) {
+  const t = o?.timeline;
+  if (!t?.detour) return { text: 'No detour is published, so buses should run as normal.', suggest: 'none' };
+  return { text: `A detour is published${o.gaps?.includes('directions') ? ' one way' : ''}, so buses can't use this street.`, suggest: 'closed' };
+}
+
+// Each team's part, as the plan in Jira lists it. Operations' part names what is still missing.
+function tasks(cr, o) {
+  const t = o?.timeline;
+  const gaps = o?.gaps || [];
+  let ops = 'Publish the detour';
+  if (cr?.impact === 'none') ops = 'Confirm buses are not affected';
+  else if (cr?.impact === 'narrowed') ops = 'Plan for the delays';
+  else if (!t?.detour) ops = 'Publish a detour';
+  else if (gaps.includes('dates')) ops = `Extend the detour to ${shortDay(t.plan?.to || t.to)}`;
+  else if (gaps.includes('directions')) ops = 'Run the detour both ways';
+  return { ops, scheduling: 'Update the timetables', passengers: 'Post the notice at stops', drivers: 'Brief the drivers' };
+}
+
 // The three steps. `cr` is null until the first answer; `ready` is false until a space is chosen.
-function steps(cr, ready) {
+function steps(cr, ready, o) {
   const r = cr?.readiness;
-  const signed = (role) => cr?.signoffs.find((s) => s.role === role)?.at;
-  // Each chip opens its evidence below the chips, so it is readable without hovering.
+  const sign = (role) => cr?.signoffs.find((s) => s.role === role);
   const checks = r?.checks?.length ? `<div class="checkchips">${r.checks.map((c) => { const [tone, mark] = CHECK_MARK[c.state]; return `<button class="cc ${tone}" data-check="${c.id}" aria-expanded="false">${mark} ${CHECK_SHORT[c.id]}</button>`; }).join('')}</div>
     ${r.checks.map((c) => `<p class="evidence" data-for="${c.id}" hidden>${esc(c.evidence)}</p>`).join('')}` : '';
-  const failing = r?.failing > 0;
-  const canSign = cr?.impact && !failing;
+  const off = ready ? '' : 'disabled';
+  const pub = published(o);
+  // The other answers stay folded away until someone says the published plan is wrong.
+  const choices = (keys) => `<div class="options" role="radiogroup" aria-label="What happens to buses?" hidden>
+    ${keys.map((k) => `<button role="radio" data-impact="${k}" aria-checked="${cr?.impact === k}" tabindex="-1" ${off}>${ANSWER_TEXT[k]}</button>`).join('')}</div>`;
+  const first = cr?.impact
+    ? `<div class="step-k">Impact on buses</div>
+      <div class="answered"><span>${ANSWER_TEXT[cr.impact]}</span><button class="link small" data-other aria-expanded="false" ${off}>Change</button></div>
+      ${choices(ANSWERS.map(([k]) => k))}${checks}`
+    : `<div class="step-k">Is the published plan right?</div>
+      <p class="published">${pub.text}</p>
+      <div class="confirm"><button class="btn primary" data-impact="${pub.suggest}" ${off}>Yes</button><button class="btn" data-other aria-expanded="false" ${off}>No</button></div>
+      ${choices(ANSWERS.map(([k]) => k).filter((k) => k !== pub.suggest))}`;
+  const jobs = tasks(cr, o);
   const teams = cr?.impact === 'none' ? TEAMS.slice(0, 1) : TEAMS;
   return `<ol class="steps">
-    <li class="${cr?.impact ? 'done' : 'now'}"><div class="step-k" id="q-through">Can buses get through?</div>
-      <div class="answers" role="radiogroup" aria-labelledby="q-through">${ANSWERS.map(([k, t]) => { const on = cr?.impact ? cr.impact === k : k === 'closed'; return `<button role="radio" data-impact="${k}" aria-checked="${cr?.impact === k}" tabindex="${on ? 0 : -1}" title="${ANSWER_HINT[k]}" ${ready ? '' : 'disabled'}>${t}</button>`; }).join('')}</div>
-      ${cr?.impact ? `<div class="step-sub">${ANSWER_HINT[cr.impact]}</div>` : ''}${checks}</li>
-    <li class="${!cr?.impact ? 'later' : r?.ready ? 'done' : 'now'}"><div class="step-k">${cr?.impact === 'none' ? 'Confirm' : 'Teams'}</div>
-      <div class="teams">${teams.map(([role, t]) => `<button data-role="${role}" aria-pressed="${!!signed(role)}" ${canSign || signed(role) ? '' : 'disabled'} ${failing ? 'title="Fix the failing checks first"' : ''}>${signed(role) ? '✓ ' : ''}${t}</button>`).join('')}</div></li>
+    <li class="${cr?.impact ? 'done' : 'now'}">${first}</li>
+    <li class="${!cr?.impact ? 'later' : r?.ready ? 'done' : 'now'}"><div class="step-k">Team sign-offs</div>
+      <div class="step-sub">Each team confirms its part is done${cr?.key ? `, recorded on ${esc(cr.key)}` : ''}.</div>
+      <ul class="teams">${teams.map(([role, t]) => { const s = sign(role); return `<li><span class="team"><b>${t}</b><span>${esc(jobs[role])}</span></span>
+        <button data-role="${role}" aria-pressed="${!!s?.at}" ${s?.at ? `title="Signed ${esc(when(s.at))}"` : ''} ${cr?.impact ? '' : 'disabled'}>${s?.at ? `✓ ${esc(names[s.by] || 'Signed')}` : 'Sign off'}</button></li>`; }).join('')}</ul></li>
     ${cr?.impact === 'none' ? '' : `<li class="${!cr?.impact ? 'later' : cr.notice ? 'done' : 'now'}"><div class="step-k">Passenger notice</div>
       <button class="btn" id="write-notice" ${cr?.impact ? '' : 'disabled'}>${cr?.notice ? 'Rewrite with Rovo' : 'Write with Rovo'}</button></li>`}
   </ol>`;
 }
 
-// Shared wiring for the steps: evidence chips, and arrow keys within the answers, as a radio group has.
+// Shared wiring for the steps: evidence chips, the folded answers, and arrow keys within them.
 function wireSteps(root) {
   $$('[data-check]', root).forEach((b) => (b.onclick = () => {
     const open = b.getAttribute('aria-expanded') !== 'true';
@@ -180,13 +213,34 @@ function wireSteps(root) {
     b.setAttribute('aria-expanded', String(open));
     $(`.evidence[data-for="${b.dataset.check}"]`, root).hidden = !open;
   }));
-  const radios = $$('[data-impact]', root);
+  const other = $('[data-other]', root);
+  const options = $('.options', root);
+  if (other && options) other.onclick = () => {
+    const open = options.hidden;
+    options.hidden = !open;
+    other.setAttribute('aria-expanded', String(open));
+    if (open) ($('[aria-checked="true"]', options) || $('[data-impact]', options)).focus();
+  };
+  const radios = $$('.options [data-impact]', root);
   radios.forEach((b, i) => (b.onkeydown = (e) => {
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
     if (!step) return;
     e.preventDefault();
     radios[(i + step + radios.length) % radios.length].focus();
   }));
+}
+
+// While a click is saved, the button shows a spinner and the rest of its step waits, so a double
+// click cannot send it twice and nothing looks switched off.
+async function working(button, scope, fn) {
+  scope.classList.add('waiting');
+  button.insertAdjacentHTML('beforeend', '<i class="spin" aria-hidden="true"></i>');
+  button.setAttribute('aria-busy', 'true');
+  try { return await fn(); } finally {
+    scope.classList.remove('waiting');
+    button.removeAttribute('aria-busy');
+    button.querySelector('.spin')?.remove();
+  }
 }
 
 const noticePrompt = (key) => `For ${key}: write a passenger notice in French and English, and a short impact assessment, then record both on ${key}.`;
@@ -357,7 +411,7 @@ function renderDetail() {
     ${badges(item.lines)}
     ${coverage(o)}
     ${space ? '' : '<div class="need-space">Choose a Jira space for plans first. <button class="link" id="go-space">Choose</button></div>'}
-    ${d ? steps(cr, space) : '<div class="skeleton"></div>'}
+    ${d ? steps(cr, space, o) : '<div class="skeleton"></div>'}
     ${d ? `<button class="btn rovo" id="rovo-handle" ${space ? '' : 'disabled'}>${ROVO_ICON}Let Rovo handle it</button>` : ''}`;
   $('#go-space')?.addEventListener('click', () => { $('#space')?.focus(); $('#setup')?.scrollIntoView({ block: 'nearest' }); });
   if (d) wireCard(item, d);
@@ -378,18 +432,16 @@ function update(d) {
 function wireCard(item, d) {
   const cr = d.changeRequest;
   wireSteps($('#detail'));
-  // The whole group waits while one answer is saved, so a double click cannot open two plans.
-  const busy = async (group, fn) => {
-    group.forEach((x) => (x.disabled = true));
-    try { update(await fn()); } catch (err) { group.forEach((x) => (x.disabled = false)); showFlag(err.message); }
-  };
-  const answers = $$('#detail [data-impact]');
-  answers.forEach((b) => (b.onclick = () => busy(answers, async () => {
-    const out = await call('answer', { id: item.id, impact: b.dataset.impact });
-    if (!cr) showFlag(`Saved in Jira as ${out.changeRequest.key}`);
-    return out;
-  })));
-  $$('#detail [data-role]').forEach((b) => (b.onclick = () => busy([b], () => call('tick', { id: item.id, role: b.dataset.role, undo: b.getAttribute('aria-pressed') === 'true' }))));
+  // Answers and sign-offs send back only what changed; the card keeps its map.
+  const run = (b, name, payload, after) => working(b, b.closest('li'), async () => {
+    try {
+      const out = await call(name, payload);
+      after?.(out);
+      if (current?.id === item.id) update({ ...current, ...out });
+    } catch (err) { showFlag(err.message); }
+  });
+  $$('#detail [data-impact]').forEach((b) => (b.onclick = () => run(b, 'answer', { id: item.id, impact: b.dataset.impact }, (out) => { if (!cr) showFlag(`Saved in Jira as ${out.changeRequest.key}`); })));
+  $$('#detail [data-role]').forEach((b) => (b.onclick = () => run(b, 'tick', { id: item.id, role: b.dataset.role, undo: b.getAttribute('aria-pressed') === 'true' })));
   $('#write-notice')?.addEventListener('click', () => askRovo(noticePrompt(cr.key)));
   $('#open-cr')?.addEventListener('click', () => openIssue(cr.key));
   $('#rovo-handle')?.addEventListener('click', () => askRovo(handlePrompt(item)));
@@ -502,27 +554,26 @@ async function renderPanel() {
     ${d ? `<h2>${esc(d.title)}</h2><div class="what">${esc(d.what)}</div>` : ''}
     ${badges(cr.lines)}
     ${coverage(o)}
-    ${steps(cr, true)}
+    ${steps(cr, true, o)}
     <div class="panel-more">
       ${cr.impact === 'closed' || cr.impact === 'stops' ? `<label class="inline"><input type="checkbox" id="both" ${cr.directions === 'both' ? 'checked' : ''}> Both ways</label>` : ''}
       <label class="inline">Until <input type="date" id="ends" value="${esc(cr.ends || '')}"></label>
     </div>
-    ${cr.signoffs.some((s) => s.at) ? `<div class="signed">${cr.signoffs.filter((s) => s.at).map((s) => `${esc(s.label)}: ${esc(names[s.by] || 'signed')}, ${esc(when(s.at))}`).join(' · ')}</div>` : ''}
     ${d ? `<details id="map-details"><summary>Map</summary><div id="panel-map"></div>${legend(d)}</details>` : ''}`;
 
   wireSteps(root);
-  const save = async (changes, group = []) => {
-    group.forEach((x) => (x.disabled = true));
-    try { P.changeRequest = await call('savePlan', changes); } catch (e) { showFlag(e.message); }
+  const save = async (changes, b) => {
+    const go = async () => { try { P.changeRequest = await call('savePlan', changes); } catch (e) { showFlag(e.message); } };
+    await (b ? working(b, b.closest('li'), go) : go());
     renderPanel();
   };
-  const answers = $$('[data-impact]', root);
-  answers.forEach((b) => (b.onclick = () => save({ impact: b.dataset.impact }, answers)));
+  $$('[data-impact]', root).forEach((b) => (b.onclick = () => save({ impact: b.dataset.impact }, b)));
   $('#both')?.addEventListener('change', (e) => save({ directions: e.target.checked ? 'both' : 'one' }));
   $('#ends').onchange = (e) => e.target.value && save({ ends: e.target.value });
-  $$('[data-role]').forEach((b) => (b.onclick = async () => {
-    b.disabled = true;
-    try { P.changeRequest = await call('signOff', { role: b.dataset.role, undo: b.getAttribute('aria-pressed') === 'true' }); } catch (e) { showFlag(e.message); }
+  $$('[data-role]', root).forEach((b) => (b.onclick = async () => {
+    await working(b, b.closest('li'), async () => {
+      try { P.changeRequest = await call('signOff', { role: b.dataset.role, undo: b.getAttribute('aria-pressed') === 'true' }); } catch (e) { showFlag(e.message); }
+    });
     renderPanel();
   }));
   $('#write-notice')?.addEventListener('click', () => askRovo(noticePrompt(P.key)));
