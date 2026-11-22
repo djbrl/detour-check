@@ -14,21 +14,24 @@ Built for Codegeist 2026 on Atlassian Forge. Category: Apps for Specialized Indu
 
 1. Install the app on your Jira site (install link: to come with the production release).
 2. Open **Apps → Detour Check**. The welcome tour sets the scene in five steps.
-3. Click **Set up**. Detour Check creates a Jira Service Management space, Roadworks Changes, and adds
-   its go-live check to the space's change workflow. Nothing to configure by hand. (An admin can pick a
-   space they already have instead; any space works.)
+3. Click **Set up**. Detour Check creates a Jira Service Management space, Roadworks Changes, or uses the
+   space an admin picks instead (any space works), and adds its go-live check to the space's workflow.
+   Nothing to configure by hand.
 4. Open **177 Cours de la Marne**. The published detours for its five bus lines end by 27 November, but the
    works run until 4 December: seven days with no detour.
-5. Click **Yes** to confirm the published plan. Detour Check opens a change request in your space. In a
-   Jira Service Management space, it is a Change with the dates, risk, impact and implementation plan
-   filled in; in any other space, it is a Task.
-6. Sign off for each team. Open the work item to see the same plan in its Detour Check panel, each sign-off
+5. Click **Yes, road closed, buses detour** to confirm the published plan. (A site with no detour asks what
+   happens to buses instead, with four answers: Road closed, buses detour; Buses skip some stops; Buses
+   slowed, lane narrowed; No effect on buses.) Detour Check opens a change request in your space. In a Jira
+   Service Management space, it is a Change with the dates, risk, impact and implementation plan filled in;
+   in any other space, it is a Task.
+6. Sign off for Scheduling, Passenger information and Drivers. Operations can't sign off until the detour
+   covers the whole works. Open the work item to see the same plan in its Detour Check panel, each sign-off
    as an internal note, and the go-live checks.
 7. Ask Rovo: **Handle the roadworks at 177 Cours de la Marne**. The Detour Check agent writes the impact
    assessment and a passenger notice in French and English, and records them on the change request.
 
 The app opens on a **demo day**: Bordeaux's feeds as they were published on 22 November 2026, frozen so that
-what you see matches the video. Switch to live data from the ••• menu.
+what you see matches the video. A Jira admin can switch to live data from the ••• menu.
 
 ## What it does
 
@@ -36,14 +39,17 @@ what you see matches the video. Switch to live data from the ••• menu.
   - that a detour leaves and rejoins the route on either side of the works;
   - that it runs in both directions;
   - that it runs for the whole time the works do.
-  A problem is a published detour that ends before the works do: 3 of the 61 sites on the demo day. 57
-  more need a closer look, led by 38 works already under way with no detour that day, and 1 is covered.
-  The list puts the problems first, and the map draws one line at a time with the detour's start and end.
+  A problem is a published detour that ends before the works do. On a fresh install, that is 3 of the 61
+  sites on the demo day; 57 more need a closer look, led by works in the roadway with no detour, and 1 is
+  covered. The list puts the problems first, and the map draws one line at a time with the detour's start
+  and end.
 - **Turns the fix into a change request.** It fills in Jira Service Management's own fields: planned start and
   end, change type, risk and impact by the number of lines, implementation, backout and test plans. Each of
-  four teams signs off: Operations, Scheduling, Passenger information and Drivers. Changing the plan clears
-  the sign-offs and says so on the work item. A plan can say the works run longer than the permit, never
-  shorter, so narrowing it cannot make a check pass. The change's own fields (dates, risk, impact,
+  four teams signs off: Operations, Scheduling, Passenger information and Drivers. A team can't sign off
+  while a check its own work answers to fails: Operations, for instance, while the detour falls short.
+  Changing what the plan is checked against clears the sign-offs and says so on the work item (swapping
+  "road closed" for "stops not served", which are checked alike, does not). A plan can say the works run
+  longer than the permit, never shorter, so narrowing it cannot make a check pass. The change's own fields (dates, risk, impact,
   implementation plan) follow the plan, and every note the app writes is internal.
 - **Keeps checking.** Every hour it compares each plan with what is published, and comments when a plan
   starts or stops matching. A change already live whose checks start failing is never moved back: its
@@ -58,12 +64,12 @@ what you see matches the video. Switch to live data from the ••• menu.
     Implement, Mark as done and the rest), and to finishing in the space's other workflows, so changing
     the work item's type or space skips nothing. A workflow shared with other spaces is left alone.
     Jira then won't let the change go live, or be closed as done, until its checks pass and its teams
-    have signed off. A plan can say the works run longer than the permit, never shorter. The validator works it out from the app's own
-    storage and the published data, not from anything on the work item, and says no when it can't be sure.
+    have signed off, and says what is missing. The validator works it out from the app's own storage and
+    the published data, not from anything on the work item, and says no when it can't be sure.
   - **Lowering a plan takes two people.** Saying the works have no effect on buses, only slow them, or
     need a detour one way only asks for a written reason, which goes on the work item. Operations must
     then sign off as someone other than the person who lowered it. Rovo and MCP clients can't lower a
-    plan at all.
+    plan at all, and only answer the impact while nobody has.
 - **Works with Rovo and other agents.** The Detour Check agent and an MCP server share five actions:
   - list disruptions;
   - get one;
@@ -86,8 +92,8 @@ what you see matches the video. Switch to live data from the ••• menu.
   watchers whenever a plan needs them: when it is first answered, when a change clears the sign-offs,
   when someone lowers it (Operations), and when the hourly check finds it no longer matches what is
   published. Jira's own notifications (bell, email, mobile app) do the rest.
-- **Go-live gate:** added by setup. If the space's workflow later loses it, the page says so and offers
-  **Add the go-live check**. It can also be added by hand under Rules → Validate details.
+- **Go-live gate:** if the space's workflow later loses it, the page says so and offers **Add the go-live
+  check**. It can also be added by hand under Rules → Validate details.
 - **MCP clients:** a site admin turns on Detour Check's tools under admin.atlassian.com → Apps → Sites →
   your site → Connected apps. Then, for example:
   `claude mcp add --transport http detour-check https://mcp.atlassian.com/forge/6da71f64-f985-4d80-8158-d64afc976b81`

@@ -123,8 +123,9 @@ modules:
           type: string
           required: false
           description: One of closed (road closed, buses divert) or stops (stops not
-            served). Lowering a plan to narrowed or none takes a person and a
-            reason, so this action refuses them.
+            served), only while the change request has no impact yet. Changing
+            it, or lowering it to narrowed or none, takes a person, so this
+            action refuses that.
         assessment:
           title: Impact assessment
           type: string

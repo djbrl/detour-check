@@ -11,11 +11,11 @@ const call = (name, payload) => R[name]({ payload, context: { accountId: 'ops-le
 
 test('team groups decide who signs off for which team', async () => {
   await call('saveSettings', { project: 'NET' });
-  await call('answer', { id: 'works-197100', impact: 'closed' });
-  await call('tick', { id: 'works-197100', role: 'ops' });
-  await assert.rejects(call('tick', { id: 'works-197100', role: 'drivers' }), /cannot sign off for Drivers/);
+  await call('answer', { id: 'works-197838', impact: 'closed' });
+  await call('tick', { id: 'works-197838', role: 'ops' });
+  await assert.rejects(call('tick', { id: 'works-197838', role: 'drivers' }), /cannot sign off for Drivers/);
   // A team without a group falls back to anyone who can edit the work item.
-  await call('tick', { id: 'works-197100', role: 'scheduling' });
+  await call('tick', { id: 'works-197838', role: 'scheduling' });
   assert.deepEqual((await setupStatus()).teamGroups, ['ops', 'drivers']);
 });
 

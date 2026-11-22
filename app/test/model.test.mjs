@@ -59,3 +59,8 @@ test('a covered item is ready only once every team has signed off', () => {
   assert.equal(readiness(plan(item, { signoffs: all }), item, desk).ready, false);
   assert.equal(readiness(plan(item, { signoffs: { ...all, drivers: { at: 'x' } } }), item, desk).ready, true);
 });
+
+test('a date range across two years names both years', () => {
+  const item = desk.byId.get('works-169572');
+  assert.match(outlook(item, desk).story, /from 1 Jul 2026 to 1 Jul 2027,/);
+});

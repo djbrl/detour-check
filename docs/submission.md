@@ -13,8 +13,8 @@ in Jira.
 **Inspiration.** In Bordeaux, the city publishes roadworks permits and the bus network publishes its detours,
 in two separate feeds. Nobody checks one against the other. On the day we froze for the demo, 61 roadworks
 sat on bus routes, and only 12 had a detour published. On 3 of them the detour ends before the works do:
-Detour Check flags those as problems. 57 more need a closer look, starting with 38 works already under way
-with no detour that day.
+Detour Check flags those as problems. 57 more need a closer look, starting with works in the roadway with no
+detour that day.
 At 177 Cours de la Marne, the detours for five bus lines end by 27 November, a week before the works do.
 
 **What it does.**
@@ -44,9 +44,10 @@ At 177 Cours de la Marne, the detours for five bus lines end by 27 November, a w
 **Challenges.**
 - Live data takes longer to build than the 25 seconds a page call is allowed, so it is built in the
   background and stored in pieces. The page always opens at once on the last copy it saw.
-- Making the check impossible to pass by editing the plan: any change clears the sign-offs and is written on
-  the work item. Only people who can edit the work item can change the plan. The gate ignores the work
-  item's own fields.
+- Making the check impossible to pass by editing the plan: any change to what is checked clears the
+  sign-offs and is written on the work item. Only people who can edit the work item can change the plan,
+  and a team can't sign off while a check its own work answers to fails. The gate ignores the work item's
+  own fields.
 - Keeping sign-offs from overwriting each other: each team's sign-off is stored on its own, tied to the
   version of the plan it approved.
 
@@ -64,7 +65,7 @@ At 177 Cours de la Marne, the detours for five bus lines end by 27 November, a w
 | 0:40 | Desk, Problems, 177 Cours de la Marne; map, line 9, detour start and end | "Here: the works run until 4 December, but the detours for its five lines end by 27 November. Seven days with no detour." |
 | 1:10 | Click Yes; the change request opens in JSM with its fields | "One click opens a change request in Jira Service Management, with the dates, risk, impact and implementation plan already filled in." |
 | 1:35 | Rovo: "Handle the roadworks at 177 Cours de la Marne"; the notice is recorded on the work item | "Rovo writes the impact assessment and the passenger notice in French and English, and records them on the change." |
-| 2:10 | Sign-offs; the work item's panel; try "Standard change", blocked by the validator with its reason | "Each team signs off. Until the detour covers the whole works, Jira will not let the change go live." |
+| 2:10 | Sign-offs, Operations held back; the work item's panel; try "Standard change", blocked by the validator with its reason | "The teams sign off, but Operations can't until the detour covers the whole works, and Jira will not let the change go live." |
 | 2:40 | JQL `detourCheck = failing` in a queue | "Every plan's status is searchable, so it fits the queues and dashboards teams already use." |
 | 2:55 | An MCP client calling list-disruptions | "The same actions are open to any agent over MCP, with every limit enforced in code." |
 | 3:10 | README "Beyond Bordeaux" table | "Bordeaux is the first city. Any city with a roadworks feed, a GTFS network and published alerts can run it." |

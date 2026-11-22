@@ -291,8 +291,10 @@ export function buildDesk(feeds, now) {
     });
   }
 
-  // Stops on the given lines within `metres` of a shape, nearest first.
-  const stopsNear = (shape, ids, metres = 40) => {
+  // Stops on the given lines within `metres` of a shape, nearest first. A permit drawn as points
+  // marks addresses along the street, often 80 m or more apart, so a stop between two of them is
+  // further from either point than it is from the works: points reach a short walk either way.
+  const stopsNear = (shape, ids, metres = shape.parts.every((p) => p.length === 1) ? 100 : 40) => {
     const want = new Set(ids);
     const found = [];
     for (const s of stops.values()) {
@@ -456,6 +458,23 @@ export function runChecks(plan, item, desk) {
 
 export const LIGHTS = { red: 'Problem', amber: 'To check', green: 'Covered' };
 
+// Works in the roadway (a new road, a utility trench, a changed layout) are the ones likely to close
+// it to buses; fences, scaffolding, street furniture and planting mostly take the pavement. To check
+// lists the first kind first.
+const KERBSIDE = /street furniture|planting|tree|site fence|scaffolding|cabinets|street light/i;
+export const worksWeight = (what) => (KERBSIDE.test(what || '') ? 1 : 0);
+
+// Days of works with no detour, counted the way the dates check counts a detour that ends early:
+// with none published, every day from the later of the start and today to the end. A plan that says
+// buses still get through has none to count.
+export function daysWithoutDetour(o, item, today, impact = null) {
+  if (impact === 'narrowed' || impact === 'none') return 0;
+  if (o.timeline?.gapDays) return o.timeline.gapDays;
+  if (o.timeline?.detour || !item.ends) return 0;
+  const from = [item.starts, today].sort()[1];
+  return from <= item.ends ? daysBetween(from, item.ends) + 1 : 0;
+}
+
 const andList = (xs) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
 function linesSaid(ids) {
   const ls = ids.map(lineInfo).filter(Boolean);
@@ -471,13 +490,16 @@ const day = (iso, now) => {
   const year = iso.slice(0, 4) !== parisDate(now).slice(0, 4) ? 'numeric' : undefined;
   return t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year, timeZone: 'Europe/Paris' });
 };
+// Two days that fall in different years both carry their year, so "1 Jul to 1 Jul 2027" reads
+// "1 Jul 2026 to 1 Jul 2027".
+const dayPair = (a, b, now) => (a.slice(0, 4) !== b.slice(0, 4) ? [day(a, `${b.slice(0, 4)}-07-01`), day(b, `${a.slice(0, 4)}-07-01`)] : [day(a, now), day(b, now)]);
 // Always in days, so the card, the timeline and Rovo give the same number.
 const days = (n) => `${n} ${n === 1 ? 'day' : 'days'}`;
 
 // The disruption itself, in one sentence.
 function storyOf(item, desk) {
-  const until = item.ends ? ` to ${day(item.ends, desk.now)}` : '';
-  return `${item.what} at ${item.title}, from ${day(item.starts, desk.now)}${until}, on the route of ${linesSaid(item.lines)}.`;
+  const [from, to] = item.ends ? dayPair(item.starts, item.ends, desk.now) : [day(item.starts, desk.now), null];
+  return `${item.what} at ${item.title}, from ${from}${to ? ` to ${to}` : ''}, on the route of ${linesSaid(item.lines)}.`;
 }
 
 // Each gap the go-live check found, as a sentence and the step that closes it.
@@ -488,7 +510,7 @@ function gapOf(c, plan, desk) {
   if (c.id === 'directions') return [`The detour for ${linesSaid(c.data.lines)} runs one way only.`, 'Publish a detour for the other direction, or confirm only one direction is affected.'];
   if (c.id === 'dates') {
     const { starts, ends, gapDays } = c.data;
-    const said = starts && ends ? `The detour runs ${day(starts, desk.now)} to ${day(ends, desk.now)}`
+    const said = starts && ends ? `The detour runs ${dayPair(starts, ends, desk.now).join(' to ')}`
       : starts ? `The detour only starts ${day(starts, desk.now)}` : `The detour ends ${day(ends, desk.now)}`;
     return [`${said}: ${days(gapDays)} of works with no detour.`, 'Extend the detour to cover the works, or confirm the road reopens sooner.'];
   }

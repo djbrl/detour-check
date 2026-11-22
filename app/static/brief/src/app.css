@@ -224,32 +224,36 @@ details summary { cursor: pointer; color: var(--muted); font-weight: 600; font-s
 .dot.amber { background: #e56910; }
 .dot.green { background: #1f845a; }
 
-.stage { position: relative; border-radius: 8px; overflow: hidden; min-height: 0; }
-.bigmap { position: absolute; inset: 0; background: var(--sunken); }
-.map-legend { position: absolute; left: 12px; bottom: 22px; z-index: 500; display: flex; gap: 12px; padding: 6px 10px; border-radius: 6px; background: var(--raised); box-shadow: var(--ds-shadow-raised, 0 1px 1px #091e4240, 0 0 1px #091e424f); font-size: 12px; color: var(--muted); }
+/* The card has a column of its own beside the map, so it never hides part of it. */
+.stage { position: relative; min-height: 0; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+.stage.with-card { grid-template-columns: minmax(0, 1fr) 360px; }
+.bigmap { grid-area: 1 / 1; position: relative; min-height: 0; border-radius: 8px; overflow: hidden; background: var(--sunken); }
+.map-legend { grid-area: 1 / 1; align-self: end; justify-self: start; position: relative; margin: 0 12px 22px; z-index: 500; display: flex; gap: 12px; padding: 6px 10px; border-radius: 6px; background: var(--raised); box-shadow: var(--ds-shadow-raised, 0 1px 1px #091e4240, 0 0 1px #091e424f); font-size: 12px; color: var(--muted); }
 .map-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .map-legend .dot { margin: 0; }
 .map-legend .sw { width: 18px; }
-.card { position: absolute; top: 12px; right: 12px; width: 360px; z-index: 500; overflow: auto; padding: 16px; border-radius: 8px; background: var(--raised); box-shadow: var(--ds-shadow-overlay, 0 8px 12px #091e4226, 0 0 1px #091e424f); max-height: calc(100% - 24px); }
+.card { grid-area: 1 / 2; min-height: 0; overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
 .card h2 { margin: 6px 0 4px; font-size: 20px; line-height: 24px; }
 .card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
 .card .meta { margin-bottom: 12px; }
 .card .row { display: flex; gap: 8px; flex-wrap: wrap; border: 0; padding: 0; width: auto; }
 .card .row:hover { background: none; }
 .card .cr { display: grid; gap: 10px; }
-@media (max-width: 900px) {
+/* Narrower (Rovo open beside the page, a small laptop): the list keeps its column, and the card
+   goes under the map in the other, so the map stays in view. */
+@media (max-width: 1279px) {
+  .desk { grid-template-columns: 300px minmax(0, 1fr); }
+  .stage.with-card { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(240px, 42%) minmax(0, 1fr); }
+  .card { grid-area: 2 / 1; }
+}
+/* A phone: one column, the map above the card, each as tall as it needs. */
+@media (max-width: 899px) {
   .desk { grid-template-columns: 1fr; height: auto; }
   .list { max-height: 320px; }
-  .stage { height: 560px; }
-  .card { left: 12px; width: auto; top: auto; }
-}
-/* On a phone the card leaves the map and sits under it, where it has room. */
-@media (max-width: 760px) {
-  .stage { height: auto; overflow: visible; display: grid; gap: 12px; }
-  .bigmap { position: relative; height: 360px; border-radius: 8px; }
-  .card { position: static; max-height: none; width: auto; }
+  .stage, .stage.with-card { grid-template-rows: 360px auto; gap: 12px; }
+  .card { overflow: visible; }
   .head-actions { margin-left: 0; flex-wrap: wrap; }
-  .map-legend { right: 12px; flex-wrap: wrap; }
+  .map-legend { flex-wrap: wrap; }
 }
 
 /* ---------- welcome screen ---------- */
@@ -337,13 +341,15 @@ button.badge[aria-pressed="true"] { background: var(--info-bg); color: var(--inf
 .cov-seg { border-radius: 4px; min-width: 2px; }
 .cov-seg.on, .cov .dot.on { background: #1f845a; }
 .cov-seg.off, .cov .dot.off { background: #c9372c; }
-.cov-seg.idle { background: var(--ds-background-neutral-hovered, #091e4224); }
+.cov-seg.idle, .cov .dot.idle { background: var(--ds-background-neutral-hovered, #091e4224); }
 .cov .dot { width: 8px; height: 8px; margin: 0; flex: none; }
 
 .steps { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 14px; counter-reset: step; }
 .steps > li { counter-increment: step; display: grid; gap: 6px; padding-left: 30px; position: relative; }
 .steps > li::before { content: counter(step); position: absolute; left: 0; top: -1px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; background: var(--info-bg); color: var(--info); }
 .steps > li.done::before { content: "✓"; background: var(--ok-bg); color: var(--ok); }
+/* Answered is not the same as fine: the mark stays neutral. */
+.steps > li.answered::before { content: "✓"; background: var(--neutral); color: var(--muted); }
 .steps > li.later { opacity: .5; }
 .step-k { font-weight: 600; }
 .step-sub { font-size: 12px; color: var(--muted); }

@@ -74,7 +74,8 @@ test('a plan goes from first answer to ready, with one Jira change request and i
 test('changing what a plan is checked against clears its sign-offs and says so on the work item', async () => {
   await call('saveSettings', { project: 'NET' });
   const { changeRequest: { key } } = await call('answer', { id: PROBLEM, impact: 'closed' });
-  for (const role of ROLES) await call('tick', { id: PROBLEM, role });
+  // Operations cannot sign off while the detour falls short; the other teams can.
+  for (const role of ROLES.slice(1)) await call('tick', { id: PROBLEM, role });
   const panel = { extension: { issue: { key } }, accountId: 'judge' };
   const before = jira.site.comments[key].length;
   const view = await R.savePlan({ payload: { ends: '2027-01-15' }, context: panel });
@@ -93,7 +94,7 @@ test('someone who cannot edit the work item cannot change its plan or sign it of
   await assert.rejects(R.savePlan({ payload: { directions: 'one', reason: 'Southbound only' }, context: panel }), /cannot edit/);
   await assert.rejects(call('answer', { id: PROBLEM, impact: 'none' }), /cannot edit/);
   await assert.rejects(call('tick', { id: PROBLEM, role: 'ops' }), /cannot sign off/);
-  await assert.rejects(recordAssessment({ changeRequest: key, impact: 'stops' }), /cannot edit/);
+  await assert.rejects(recordAssessment({ changeRequest: key, passengerNotice: 'Stop Peyronnet is not served.' }), /cannot edit/);
 });
 
 test('deleting the work item frees the roadworks to be planned again', async () => {
@@ -128,7 +129,7 @@ test('Rovo lists problems, opens a plan and records its assessment on that plan 
 
   const rec = await recordAssessment({ changeRequest: made.key, impact: 'closed', assessment: 'Line 9 cannot pass.', passengerNotice: 'Stop Victoire is not served.' });
   assert.deepEqual(rec.recorded, { impact: 'Road closed: buses divert', assessment: true, passengerNotice: true });
-  assert.equal(jira.site.comments[made.key].length, 3, 'the teams were asked when the plan was answered');
+  assert.equal(jira.site.comments[made.key].length, 2, 'the teams were asked when the plan was answered, then one note holds the assessment and the notice');
 
   const check = await checkChangeRequest({ changeRequest: made.key });
   assert.equal(check.readyToGoLive, false);
@@ -224,7 +225,7 @@ test('the go-live gate reads storage and the published data, never the work item
   let gate = await goLive({ issue: { key } });
   assert.equal(gate.result, false);
   assert.match(gate.errorMessage, /Detour covers the whole works/);
-  assert.match(gate.errorMessage, /Operations sign-off/);
+  assert.match(gate.errorMessage, /^Detour Check: "Detour covers the whole works" fails\. Waiting for Operations, Scheduling, Passenger information and Drivers to sign off\. Open Detour Check on this work item\.$/);
   delete jira.site.properties[`${key}/detour-check`];
   assert.equal((await goLive({ issue: { key } })).result, false);
   // A work item Detour Check did not open goes through, and so does nonsense.
@@ -316,6 +317,10 @@ test('a first answer that lowers the plan says why on the work item, and an old 
   const panel = (accountId) => ({ extension: { issue: { key } }, accountId });
   assert.equal((await R.getPanel({ context: panel('alice') })).changeRequest.readiness.blocker, 'A reason for the lower impact');
   await R.savePlan({ payload: { reason: 'Pavement works only, checked on site' }, context: panel('alice') });
+  // The reason is alice's, but the plan was lowered by the person who opened it: neither confirms it.
+  assert.deepEqual([store.get(`plan:${key}`).lowered.by, store.get(`plan:${key}`).lowered.reasonBy], ['judge', 'alice']);
+  await assert.rejects(R.signOff({ payload: { role: 'ops', signed: true }, context: panel('judge') }), /someone else signs off/);
+  await assert.rejects(R.signOff({ payload: { role: 'ops', signed: true }, context: panel('alice') }), /someone else signs off/);
   await R.signOff({ payload: { role: 'ops', signed: true }, context: panel('bob') });
   assert.deepEqual(await goLive({ issue: { key } }), { result: true });
 });
@@ -373,8 +378,9 @@ test('Rovo gets places, lines and plain words, and asks when a place matches sev
   assert.ok(several.matches.every((m) => m.place && m.dates && m.lines.every((l) => /^(Bus|Tram) /.test(l))));
 
   await call('answer', { id: PROBLEM, impact: 'closed' });
-  await call('tick', { id: PROBLEM, role: 'ops' });
+  await call('tick', { id: PROBLEM, role: 'scheduling' });
   const one = await getDisruption({ disruption: '177 Cours de la Marne' });
+  assert.deepEqual(one.stopsNearby.slice(0, 2), ['Peyronnet', 'Gare Saint-Jean (Marne)'], 'a permit drawn as points still finds the stops along it');
   assert.equal(one.ref, PROBLEM);
   assert.equal(one.light, 'Problem');
   assert.ok(one.detourByLine.length > 0 && one.detourByLine.every((l) => l.endsBeforeTheWorks === true && /27 Nov/.test(l.until)));
@@ -383,4 +389,92 @@ test('Rovo gets places, lines and plain words, and asks when a place matches sev
   assert.ok(!text.includes('judge'), 'no account ids');
   assert.ok(!/"(impact|state|result|status)":"(closed|stops|failing|fail|pass|in-force)"/.test(text), 'no raw values');
   assert.ok(!text.includes('"geo"'), 'no map geometry');
+});
+
+// A site with no published detour on the demo day, for the notice and day-count tests.
+const noDetour = async () => (await call('getDesk')).items.find((i) => !i.outlook.timeline.detour && i.ends > '2026-11-22');
+
+test('a notice cannot announce a detour for roadworks that have none published', async () => {
+  await call('saveSettings', { project: 'NET' });
+  const site = await noDetour();
+  const { key } = await createChangeRequestAction({ disruption: site.id }, {});
+  for (const text of ['Bus 9 : déviation par la rue Kléber.', 'DÉVIÉ entre deux arrêts', 'Buses divert via Rue Kléber.', 'Diversion in place until Friday.', 'Take the detour signed on site.']) {
+    await assert.rejects(recordAssessment({ changeRequest: key, passengerNotice: text }), /none is published[^]*Say no detour is published yet/, text);
+  }
+  assert.equal(jira.site.comments[key], undefined, 'nothing was recorded');
+  const ok = await recordAssessment({ changeRequest: key, passengerNotice: 'Arrêt non desservi, pas de déviation. Stop not served, no detour.' });
+  assert.equal(ok.recorded.passengerNotice, true);
+  // Where a detour is published, the notice may announce it.
+  const made = await createChangeRequestAction({ disruption: PROBLEM }, {});
+  assert.equal((await recordAssessment({ changeRequest: made.key, passengerNotice: 'Lignes déviées jusqu’au 27 novembre.' })).recorded.passengerNotice, true);
+});
+
+test('an agent sets the impact only while there is none, and says who drafted its notes', async () => {
+  await call('saveSettings', { project: 'NET' });
+  const { key } = await createChangeRequestAction({ disruption: PROBLEM }, {});
+  const rovo = { context: { moduleKey: 'detour-check-agent' } };
+  await recordAssessment({ ...rovo, changeRequest: key, impact: 'closed', assessment: 'Five lines cannot pass.' });
+  await assert.rejects(recordAssessment({ ...rovo, changeRequest: key, impact: 'stops' }), /already "Road closed: buses divert"[^]*A person changes it on the change request/);
+  // The same answer again is no change, so the notes still go on.
+  await recordAssessment({ context: { moduleKey: 'detour-check-mcp' }, changeRequest: key, impact: 'closed', assessment: 'Again.', passengerNotice: 'Lignes déviées. Lines diverted.' });
+  await recordAssessment({ changeRequest: key, assessment: 'Third.' });
+  const headings = jira.site.comments[key].map((c) => c.body.content[0].content[0].text);
+  assert.deepEqual(headings.slice(-3), [
+    'Impact assessment (drafted by Rovo, check before approving)',
+    'Impact assessment and passenger notice (drafted by an agent over MCP, check before approving)',
+    'Impact assessment (drafted by an agent, check before approving)',
+  ]);
+  assert.match(JSON.stringify(jira.site.comments[key].at(-2)), /Draft passenger notice, for Passenger information to approve/);
+});
+
+test('swapping road closed for stops not served keeps the sign-offs; anything else clears them', async () => {
+  await call('saveSettings', { project: 'NET' });
+  const { changeRequest: { key } } = await call('answer', { id: COVERED, impact: 'closed' });
+  for (const role of ROLES) await call('tick', { id: COVERED, role });
+  const panel = { extension: { issue: { key } }, accountId: 'judge' };
+  let view = await R.savePlan({ payload: { impact: 'stops' }, context: panel });
+  assert.deepEqual([view.readiness.signed, view.readiness.ready], [4, true]);
+  assert.equal(jira.site.comments[key].at(-1).body.content[0].content[0].text, 'Plan changed');
+  assert.equal(jira.site.properties[`${key}/detour-check`].status, 'ready');
+  view = await R.savePlan({ payload: { impact: 'closed' }, context: panel });
+  assert.equal(view.readiness.signed, 4);
+  view = await R.savePlan({ payload: { impact: 'narrowed', reason: 'One lane stays open' }, context: panel });
+  assert.equal(view.readiness.signed, 0);
+});
+
+test('a team cannot sign off while a check its own work answers to fails', async () => {
+  await call('saveSettings', { project: 'NET' });
+  const { changeRequest: { key } } = await call('answer', { id: PROBLEM, impact: 'closed' });
+  await assert.rejects(call('tick', { id: PROBLEM, role: 'ops' }), /^Error: Operations can't sign off while "Detour covers the whole works" fails\.$/);
+  const panel = { extension: { issue: { key } }, accountId: 'judge' };
+  await assert.rejects(R.signOff({ payload: { role: 'ops', signed: true }, context: panel }), /can't sign off/);
+  const view = await call('tick', { id: PROBLEM, role: 'drivers' });
+  assert.deepEqual(view.changeRequest.signoffs.filter((x) => x.at).map((x) => x.role), ['drivers']);
+  // Saying buses only slow down asks no detour of Operations, so it can sign off (as someone else).
+  await R.savePlan({ payload: { impact: 'narrowed', reason: 'One lane stays open' }, context: panel });
+  await R.signOff({ payload: { role: 'ops', signed: true }, context: { ...panel, accountId: 'bob' } });
+});
+
+test('agents read whether a change is live, its impact, and the days with no detour', async () => {
+  await call('saveSettings', { project: 'NET' });
+  const site = await noDetour();
+  const listed = (await listDisruptions({})).disruptions.find((d) => d.ref === site.id);
+  assert.deepEqual([listed.liveInJira, listed.impact], [false, 'Not answered yet']);
+  assert.ok(listed.daysWithoutDetour > 0, 'a site with no detour has days without one');
+  assert.equal((await getDisruption({ disruption: site.id })).daysWithoutDetour, listed.daysWithoutDetour);
+
+  const { changeRequest: { key } } = await call('answer', { id: PROBLEM, impact: 'closed' });
+  let one = await getDisruption({ disruption: PROBLEM });
+  assert.deepEqual([one.liveInJira, one.impact, one.changeRequest.liveInJira, one.daysWithoutDetour], [false, 'Road closed: buses divert', false, 7]);
+  jira.site.issues[key].status = { name: 'Implementing', statusCategory: { key: 'indeterminate' } };
+  one = await getDisruption({ disruption: PROBLEM });
+  assert.deepEqual([one.liveInJira, one.changeRequest.liveInJira], [true, true]);
+  assert.equal((await listDisruptions({})).disruptions.find((d) => d.ref === PROBLEM).liveInJira, true);
+});
+
+test('to check lists works in the roadway before kerbside works', async () => {
+  const amber = (await call('getDesk')).items.filter((i) => i.outlook.light === 'amber');
+  const kerb = (i) => /street furniture|planting|tree|site fence|scaffolding|cabinets|street light/i.test(i.what);
+  const first = amber.findIndex(kerb);
+  assert.ok(first > 0 && amber.slice(first).every(kerb), 'every kerbside site comes after every roadway site');
 });

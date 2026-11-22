@@ -7,7 +7,7 @@ import {
   readiness, lowered, lowering, createChangeRequest, savePlan, signOff, checkAll, getPlan, addComment, publishStatus, forgetIssue, goLiveCheck, MARKED,
   liveKeys, liveNow, liveOutlook,
 } from './desk.js';
-import { summary, detail, outlook, coverage, lineInfo, IMPACTS, LIGHTS, dayLabel } from './model.js';
+import { summary, detail, outlook, coverage, lineInfo, IMPACTS, LIGHTS, dayLabel, worksWeight, daysWithoutDetour } from './model.js';
 
 const str = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 // Pages send the sign-off state they want ("signed"); older pages sent "undo".
@@ -39,10 +39,11 @@ async function deskList() {
     }
     items.push({ ...summary(item, desk), outlook: liveOutlook(outlook(item, desk, plan, r), !!state?.liveFailing), changeRequest: cr ? { key: cr.key, ...state } : null });
   }
-  // Problems first, then what needs checking (works already under way first), then what is covered;
-  // sooner first within each.
+  // Problems first, then what needs checking (works in the roadway before kerbside works, then works
+  // already under way), then what is covered; sooner first within each.
   const rank = { red: 0, amber: 1, green: 2 };
-  items.sort((a, b) => rank[a.outlook.light] - rank[b.outlook.light] || !!b.outlook.underway - !!a.outlook.underway || a.starts.localeCompare(b.starts));
+  const weight = (i) => (i.outlook.light === 'amber' ? worksWeight(i.what) : 0);
+  items.sort((a, b) => rank[a.outlook.light] - rank[b.outlook.light] || weight(a) - weight(b) || !!b.outlook.underway - !!a.outlook.underway || a.starts.localeCompare(b.starts));
   return { settings, now: desk.now, today: desk.today, takenAt: desk.takenAt, mode: desk.mode, liveLoading: !!desk.liveLoading, liveError: desk.liveError || null, items };
 }
 
@@ -157,6 +158,7 @@ function planForModel(view, now) {
     impact: `${view.impactLabel}${oneWay ? ', one way only' : ''}`,
     worksUntil: view.endsLabel,
     status: r.ready ? 'Ready to go live' : STATE[r.state] || 'Not answered yet',
+    liveInJira: !!view.live,
     ...(view.liveFailing ? { warning: 'Live in Jira, but the checks no longer pass' } : view.live ? { live: 'Live in Jira' } : {}),
     readyToGoLive: r.ready,
     ...(r.blocker ? { stillNeeded: r.blocker } : {}),
@@ -178,6 +180,9 @@ function siteForModel(item, desk, view = null) {
   return {
     ref: item.id,
     place: d.title,
+    // Facts the model would otherwise guess: whether the change is live, and what was answered.
+    liveInJira: !!view?.live,
+    impact: view?.impact ? view.impactLabel : 'Not answered yet',
     works: d.what,
     status: d.status === 'in-force' ? 'In force' : 'Not started yet',
     starts: d.startsLabel,
@@ -185,7 +190,7 @@ function siteForModel(item, desk, view = null) {
     lines: d.lines.map(LINE),
     stopsNearby: unique(d.stops.map((s) => s.name)).slice(0, 12),
     light: LIGHTS[o.light], label: o.label, summary: o.story, problem: o.problem, alsoWrong: o.more, nextStep: o.next,
-    daysWithoutDetour: o.timeline?.gapDays || 0,
+    daysWithoutDetour: daysWithoutDetour(o, item, desk.today, view?.impact),
     worksUntil: dayLabel(ends, now),
     detourByLine: buses.map((id) => {
       const s = span.get(id);
@@ -229,7 +234,9 @@ export async function listDisruptions(payload) {
       return {
         ref: i.id, place: i.title, works: i.what, status: i.status === 'in-force' ? 'In force' : 'Not started yet', starts: i.startsLabel, ends: i.endsLabel,
         light: LIGHTS[i.outlook.light], label: i.outlook.label, summary: i.outlook.story, problem: i.outlook.problem, nextStep: i.outlook.next,
-        daysWithoutDetour: i.outlook.timeline?.gapDays || 0,
+        daysWithoutDetour: daysWithoutDetour(i.outlook, i, list.today, cr?.impact),
+        liveInJira: !!cr?.live,
+        impact: cr?.impact ? IMPACTS[cr.impact] : 'Not answered yet',
         lines: i.lines.map(LINE),
         changeRequest: !cr ? 'None yet' : `${cr.key}: ${cr.ready ? 'ready to go live' : (STATE[cr.state] || 'not answered yet').toLowerCase()}, ${cr.signed ?? 0} of ${cr.roles ?? 4} teams signed off${cr.liveFailing ? '. Live in Jira, but the checks no longer pass' : ''}`,
       };
@@ -280,20 +287,47 @@ export async function checkChangeRequest(payload) {
   return planForModel(await changeRequestView(key, desk, { plan, live, full: false }), desk.now);
 }
 
+// A notice may only announce a detour that is published. "Pas de déviation" and "no detour" say
+// the opposite, so they are taken out before looking.
+const NO_DETOUR = /\b(no|without|pas de|aucune?|sans)\s+(déviations?|detours?|diversions?)\b/g;
+const announcesDetour = (text) => /dévi|divert|diversion|detour/.test(text.normalize('NFC').toLowerCase().replace(NO_DETOUR, ''));
+
+// Who drafted it, as far as the call says: Rovo names the agent module, an MCP client the MCP one.
+// Anything else is just "an agent", never a guess.
+function drafter(payload) {
+  const module = str(payload?.context?.moduleKey, 100);
+  if (module === 'detour-check-agent') return 'Rovo';
+  if (module === 'detour-check-mcp') return 'an agent over MCP';
+  return 'an agent';
+}
+
 export async function recordAssessment(payload) {
   const key = str(payload?.changeRequest, 40) || contextKey(payload);
   need(ISSUE_KEY.test(key), 'Give a change request key like ROAD-1');
   // Only plans Detour Check opened take comments from here, never any work item a model names.
-  need(await getPlan(key), `${key} is not a plan from Detour Check`);
+  const plan = await getPlan(key);
+  need(plan, `${key} is not a plan from Detour Check`);
   const impact = str(payload?.impact, 20);
   const assessment = str(payload?.assessment, 3000);
   const notice = str(payload?.passengerNotice, 3000);
   need(impact || assessment || notice, 'Nothing to record');
   // An agent can raise a plan's impact but never lower it: that takes a person and a reason.
   need(!impact || !lowered({ impact }), `An agent cannot set "${IMPACTS[impact] || impact}". A person sets it on the change request, with a reason, and someone else signs off for Operations.`);
+  // An agent answers the impact only while nobody has. Changing an answer is a person's call.
+  need(!impact || !plan.impact || impact === plan.impact, `The impact is already "${IMPACTS[plan.impact]}". A person changes it on the change request. Record the assessment and notice without an impact.`);
+  if (notice && announcesDetour(notice)) {
+    const { desk } = await currentDesk();
+    const item = desk.byId.get(plan.item);
+    const { buses, found } = item ? coverage(item, desk, plan) : { buses: [], found: new Map() };
+    need(!item || buses.some((id) => found.get(id).length), 'The notice announces a detour, but none is published for these roadworks. Nothing was recorded. Say no detour is published yet.');
+  }
   if (impact || notice) await savePlan(key, { ...(impact ? { impact } : {}), notice: !!notice });
-  if (assessment) await addComment(key, 'Impact assessment (drafted by Rovo, check before approving)', assessment);
-  if (notice) await addComment(key, 'Draft passenger notice (drafted by Rovo, for Passenger information to approve)', notice);
+  const by = drafter(payload);
+  // Recorded together, they are one note: one thing for the teams to read and approve.
+  if (assessment && notice) {
+    await addComment(key, `Impact assessment and passenger notice (drafted by ${by}, check before approving)`, [['Impact assessment', assessment], ['Draft passenger notice, for Passenger information to approve', notice]]);
+  } else if (assessment) await addComment(key, `Impact assessment (drafted by ${by}, check before approving)`, assessment);
+  else if (notice) await addComment(key, `Draft passenger notice (drafted by ${by}, for Passenger information to approve)`, notice);
   return { key, recorded: { impact: impact ? IMPACTS[impact] : 'unchanged', assessment: !!assessment, passengerNotice: !!notice } };
 }
 

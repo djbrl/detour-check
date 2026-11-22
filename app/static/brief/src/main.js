@@ -220,7 +220,7 @@ function coverage(o) {
     ${t.gapDays ? `<p class="cov-problem ${o.light}">${days(t.gapDays)} without a detour</p>` : other}
     <div class="cov-row cov-works"><span class="cov-k">${t.plan ? 'Plan' : 'Works'}</span><span>${range(from, t.plan?.to || t.to)}</span></div>
     <div class="cov-bar" role="img" aria-label="${esc(d ? `Detour ${range(d.from, d.to)}` : 'No detour')}">${bar}</div>
-    ${row('Detour', 'on', d ? range(d.from, d.to) : 'None published')}
+    ${row('Detour', d ? 'on' : o.light === 'red' ? 'off' : 'idle', d ? range(d.from, d.to) : 'None published')}
     ${missed ? row('No detour', 'off', missed) : ''}
   </div>`;
 }
@@ -230,6 +230,8 @@ const ANSWERS = [['closed', 'Road closed, buses detour'], ['stops', 'Buses skip 
 const ANSWER_TEXT = Object.fromEntries(ANSWERS);
 const CHECK_SHORT = { diversion: 'Detour', directions: 'Both ways', dates: 'Whole time', notice: 'Riders told' };
 const CHECK_MARK = { pass: ['ok', '✓'], fail: ['bad', '✕'], pending: ['wait', '◷'] };
+// The checks each team's own work answers to (OWNS in src/desk.js).
+const OWNS = { ops: ['diversion', 'directions', 'dates'], passengers: ['notice'] };
 const TEAMS = [['ops', 'Operations'], ['scheduling', 'Scheduling'], ['passengers', 'Passenger info'], ['drivers', 'Drivers']];
 
 // What the published information says about the works, and the answer that goes with it, so the
@@ -277,17 +279,21 @@ function steps(cr, ready, o) {
     : `<div class="step-k">What happens to buses here?</div>
       ${choices(ANSWERS.map(([k]) => k)).replace(' hidden>', '>')}`;
   const jobs = tasks(cr, o);
-  const notMine = (role) => role === 'ops' && cr?.lowered && ME && cr.lowered.by === ME && !sign(role)?.at;
+  const notMine = (role) => role === 'ops' && cr?.lowered && ME && [cr.lowered.by, cr.lowered.reasonBy].includes(ME) && !sign(role)?.at;
+  // As the backend refuses it: a team cannot sign off while a check its own work answers to fails.
+  const held = (role) => !sign(role)?.at && r?.checks?.some((c) => c.state === 'fail' && OWNS[role]?.includes(c.id));
   if (notMine('ops')) jobs.ops = 'Someone else confirms: you lowered the impact';
+  else if (held('ops')) jobs.ops = `${jobs.ops} first`;
+  if (held('passengers')) jobs.passengers = `${jobs.passengers} first`;
   const teams = cr?.impact === 'none' ? TEAMS.slice(0, 1) : TEAMS;
   return `${cr?.liveFailing ? '<div class="live-fail">Live, but the checks no longer pass</div>' : r?.ready ? '<div class="ready">✓ Ready to go live: every team signed off and the checks pass.</div>' : ''}
   <ol class="steps">
-    <li class="${cr?.impact ? 'done' : 'now'}">${first}</li>
+    <li class="${cr?.impact ? 'answered' : 'now'}">${first}</li>
     <li class="${!cr?.impact ? 'later' : r?.ready ? 'done' : 'now'}"><div class="step-k">Team sign-offs</div>
       <div class="step-sub">Each team confirms its part is done${cr?.key ? `, recorded on ${esc(cr.key)}` : ''}.</div>
       <ul class="teams">${teams.map(([role, t]) => { const s = sign(role); return `<li><span class="team"><b>${t}</b><span>${esc(jobs[role])}</span></span>
-        <button data-role="${role}" aria-pressed="${!!s?.at}" ${s?.at ? `title="Signed ${esc(when(s.at))}"` : ''} ${cr?.impact && !notMine(role) ? '' : 'disabled'}>${s?.at ? `✓ ${esc(names[s.by] || 'Signed')}` : 'Sign off'}</button></li>`; }).join('')}</ul></li>
-    ${cr?.impact === 'none' ? '' : `<li class="${!cr?.impact ? 'later' : cr.notice ? 'done' : 'now'}"><div class="step-k">Passenger notice</div>
+        <button data-role="${role}" aria-pressed="${!!s?.at}" ${s?.at ? `title="Signed ${esc(when(s.at))}"` : ''} ${cr?.impact && !notMine(role) && !held(role) ? '' : 'disabled'}>${s?.at ? `✓ ${esc(names[s.by] || 'Signed')}` : 'Sign off'}</button></li>`; }).join('')}</ul></li>
+    ${cr?.impact === 'none' ? '' : `<li class="${!cr?.impact ? 'later' : cr.notice ? 'answered' : 'now'}"><div class="step-k">Passenger notice</div>
       ${cr?.notice
         ? `<div class="answered"><span>Drafted on ${esc(cr.key)}, for Passenger info to check</span><button class="link small" id="write-notice">Rewrite</button></div>`
         : `<button class="btn" id="write-notice" ${cr?.impact ? '' : 'disabled'}>Write with Rovo</button>`}</li>`}
@@ -369,8 +375,8 @@ let current = null; // detail of the selected disruption
 let line = null; // the line the map shows for it
 let big = null; // the desk's map, with one layer for every disruption and one for the selected one
 const LIGHT_COLOR = { red: '#c9372c', amber: '#e56910', green: '#1f845a' };
-// The card covers the right of the map, so fitted shapes keep clear of it.
-const CARD_PAD = { paddingTopLeft: [40, 40], paddingBottomRight: [400, 40], maxZoom: 16 };
+// The card has its own column, so fitted shapes only keep clear of the map's edges.
+const CARD_PAD = { padding: [40, 40], maxZoom: 16 };
 
 function renderHead() {
   const demo = D.mode !== 'live';
@@ -518,6 +524,8 @@ async function setUp(project, btn) {
 
 const matches = (i) => !query || norm(i.title).includes(norm(query)) || norm(i.what).includes(norm(query)) || i.lines.some((l) => norm(l.short) === norm(query));
 const count = (k) => D.items.filter((i) => i.outlook.light === k).length;
+// A search looks at every site, so each tab counts what matches it.
+const found = (k) => D.items.filter((i) => (k === 'all' || i.outlook.light === k) && matches(i)).length;
 const street = (i) => i.title.replace(/, (Bordeaux|Bègles|Mérignac|Pessac|Talence|Cenon|Floirac|Lormont|Bruges|Eysines|Le Bouscat|Villenave-d'Ornon)$/, '');
 // The row's one fact, in a few words: what is wrong, or what covers it.
 function fact(i) {
@@ -529,10 +537,17 @@ function fact(i) {
   return `Detour until ${shortDay(t.detour.to)}`;
 }
 const shown = () => (seg === 'all' ? D.items : D.items.filter((i) => i.outlook.light === seg)).filter(matches);
+// An empty tab says where the matches are instead, so a search never looks like it found nothing.
+function empty(segs) {
+  const [, here] = segs.find(([k]) => k === seg);
+  const elsewhere = segs.filter(([k, , n]) => k !== seg && k !== 'all' && n).map(([, label, n]) => `${n} in ${label}.`);
+  if (elsewhere.length) return `None in ${here}. ${elsewhere.join(' ')}`;
+  return query ? 'Nothing matches.' : seg === 'red' ? 'No problems.' : 'None here.';
+}
 
 function renderList() {
   // The filters double as the legend for the coloured dots on the list and the map.
-  const segs = [['red', 'Problems', count('red')], ['amber', 'To check', count('amber')], ['green', 'Covered', count('green')], ['all', 'All', D.items.length]];
+  const segs = [['red', 'Problems', found('red')], ['amber', 'To check', found('amber')], ['green', 'Covered', found('green')], ['all', 'All', found('all')]];
   $('#seg').innerHTML = segs.map(([k, label, n]) => `<button data-k="${k}" aria-pressed="${seg === k}">${k === 'all' ? '' : `<i class="dot ${k}" aria-hidden="true"></i>`}${label}<span class="n">${n}</span></button>`).join('');
   $$('#seg button').forEach((b) => (b.onclick = () => { seg = b.dataset.k; renderList(); drawOverview(); }));
 
@@ -543,7 +558,7 @@ function renderList() {
       <span class="dot ${i.outlook.light}" role="img" aria-label="${esc(i.outlook.label)}"></span>
       <span class="body"><span class="t">${esc(street(i))}</span><span class="p">${esc(fact(i))}</span></span>
       <span class="when">${esc(shortDay(i.starts))}</span></button></li>`).join('')}</ul>`
-    : `<div class="empty">${seg === 'red' ? 'Every published detour covers its roadworks.' : 'Nothing matches.'}</div>`;
+    : `<div class="empty">${empty(segs)}</div>`;
   box.scrollTop = scroll;
   $$('.row', box).forEach((b) => (b.onclick = () => select(b.dataset.id)));
 }
@@ -612,7 +627,7 @@ async function select(id) {
   renderDetail();
   $(`.row[data-id="${id}"]`)?.scrollIntoView({ block: 'nearest' });
   // On a phone the card sits below the map, so bring it into view.
-  if (matchMedia('(max-width: 760px)').matches) $('#detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (matchMedia('(max-width: 899px)').matches) $('#detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
   await loadItem(id, item);
 }
 
@@ -641,9 +656,13 @@ function renderDetail() {
   const card = $('#detail');
   const item = D.items.find((i) => i.id === selected);
   card.hidden = !item;
+  $('.stage').classList.toggle('with-card', !!item);
   if (!item) return;
   const d = current;
   const cr = d?.changeRequest;
+  // Who signed is a second round trip, so the card is drawn first and again once names arrive.
+  const who = [...(cr?.signoffs || []).map((s) => s.by), cr?.lowered?.by].filter((id) => id && !(id in names));
+  if (who.length && inJira) loadNames(who).then(() => { if (current === d) renderDetail(); });
   const o = d?.outlook || item.outlook;
   const space = !!D.settings.project;
   card.innerHTML = `
@@ -947,6 +966,8 @@ async function loadNames(ids) {
     const res = await b.requestJira(`/rest/api/3/user/bulk?${missing.map((id) => `accountId=${encodeURIComponent(id)}`).join('&')}`);
     for (const u of (await res.json()).values || []) names[u.accountId] = u.displayName;
   } catch { /* names are a nicety; the sign-off stands without them */ }
+  // Asked once: a name Jira does not give stays "Signed", and is not asked for again on every redraw.
+  for (const id of missing) if (!(id in names)) names[id] = null;
 }
 
 let followingPanel = null;

@@ -1,7 +1,7 @@
 // Stands in for the Forge backend when the page is opened outside Jira (local preview). It runs the
 // same model on the frozen demo day, keeps change requests in memory, and applies the backend's rules
 // (src/desk.js) so the preview behaves like Jira.
-import { reviveDesk, runChecks, defaultPlan, summary, detail, outlook, lineInfo, IMPACTS, dayLabel } from '../../../src/model.js';
+import { reviveDesk, runChecks, defaultPlan, summary, detail, outlook, lineInfo, IMPACTS, dayLabel, worksWeight } from '../../../src/model.js';
 import day from '../../../src/demo-desk.json';
 
 const desk = reviveDesk(day);
@@ -27,17 +27,25 @@ function view(key) {
   };
 }
 const RANK = { red: 0, amber: 1, green: 2 };
+const weight = (i) => (i.outlook.light === 'amber' ? worksWeight(i.what) : 0);
 const need = (ok, message) => { if (!ok) throw new Error(message); };
+// As in the app: road closed and stops not served are checked alike, so swapping them keeps the sign-offs.
+const SAME = ['closed', 'stops'];
 function setImpact(plan, impact) {
   need(IMPACTS[impact], 'Unknown answer');
-  if (plan.impact !== impact) plan.signoffs = {};
+  if (plan.impact !== impact && !(SAME.includes(plan.impact) && SAME.includes(impact))) plan.signoffs = {};
   plan.impact = impact;
 }
+const OWNS = { ops: ['diversion', 'directions', 'dates'], passengers: ['notice'] };
 function sign(plan, role, undo) {
   need(ROLES[role], 'Unknown sign-off');
   need(plan.impact, 'Answer whether buses can get through first');
+  const failing = undo ? [] : runChecks(plan, desk.byId.get(plan.item), desk).checks.filter((c) => c.state === 'fail' && OWNS[role]?.includes(c.id));
+  need(!failing.length, `${ROLES[role]} can't sign off while ${failing.map((c) => `"${c.label}"`).join(' and ')} fails.`);
   if (undo) delete plan.signoffs[role]; else plan.signoffs[role] = { by: null, at: new Date().toISOString() };
 }
+// Pages send the sign-off state they want ("signed").
+const wantsUndo = (p) => (typeof p.signed === 'boolean' ? !p.signed : !!p.undo);
 const panelKey = () => new URLSearchParams(location.search).get('panel') || Object.keys(state.plans)[0];
 
 const handlers = {
@@ -48,7 +56,7 @@ const handlers = {
       const plan = cr && state.plans[cr.key];
       const r = cr && readiness(plan, item);
       return { ...summary(item, desk), outlook: outlook(item, desk, plan, r), changeRequest: cr ? { key: cr.key, state: r.state, failing: r.failing, pending: r.pending, signed: r.signed, roles: r.roles, ready: r.ready } : null };
-    }).sort((a, b) => RANK[a.outlook.light] - RANK[b.outlook.light] || !!b.outlook.underway - !!a.outlook.underway || a.starts.localeCompare(b.starts)),
+    }).sort((a, b) => RANK[a.outlook.light] - RANK[b.outlook.light] || weight(a) - weight(b) || !!b.outlook.underway - !!a.outlook.underway || a.starts.localeCompare(b.starts)),
   }),
   getItem: ({ id }) => { const v = state.crs[id] ? view(state.crs[id].key) : null; return { ...detail(desk.byId.get(id), desk), outlook: v?.outlook || outlook(desk.byId.get(id), desk), changeRequest: v }; },
   getSetup: () => ({ admin: true, project: state.settings.project || null, teamGroups: [], space: state.settings.project ? { found: true, name: 'Network Changes', serviceSpace: true, canCreate: true, issueType: 'Change', changeFields: ['Planned start', 'Planned end'], allFields: 9, gate: { workflow: 'Change workflow', guarded: ['Standard change', 'Emergency override', 'Approve', 'Implement'], missing: [] } } : null }),
@@ -68,7 +76,7 @@ const handlers = {
     setImpact(state.plans[state.crs[id].key], impact);
     return handlers.getItem({ id });
   },
-  tick: ({ id, role, undo }) => { need(state.crs[id], 'Answer whether buses can get through first'); sign(state.plans[state.crs[id].key], role, undo); return handlers.getItem({ id }); },
+  tick: (p) => { need(state.crs[p.id], 'Answer whether buses can get through first'); sign(state.plans[state.crs[p.id].key], p.role, wantsUndo(p)); return handlers.getItem({ id: p.id }); },
   getPanel: () => ({ key: panelKey(), mode: 'demo', now: desk.now, changeRequest: view(panelKey()) }),
   savePlan: ({ impact, directions, ends }) => {
     const plan = state.plans[panelKey()];
@@ -78,7 +86,7 @@ const handlers = {
     if (ends !== undefined) { need(/^\d{4}-\d{2}-\d{2}$/.test(ends), 'End date is YYYY-MM-DD'); if (plan.ends !== ends) plan.signoffs = {}; plan.ends = ends; }
     return view(panelKey());
   },
-  signOff: ({ role, undo }) => { sign(state.plans[panelKey()], role, undo); return view(panelKey()); },
+  signOff: (p) => { sign(state.plans[panelKey()], p.role, wantsUndo(p)); return view(panelKey()); },
 };
 
 // Opening ?panel=works-199167 on its own creates that change request first, for previews.

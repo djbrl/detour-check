@@ -27,6 +27,9 @@ export function need(ok, message) {
   if (!ok) throw new Error(message);
 }
 
+// "Operations, Scheduling and Drivers".
+const andList = (xs) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
+
 // ---------- settings ----------
 
 export async function getSettings() {
@@ -397,13 +400,21 @@ export function lowering(next, reason, accountId) {
   return { reason: text, by: accountId, at: new Date().toISOString() };
 }
 
+// Everyone who had a hand in lowering a plan: who lowered it and, when the reason came later, who
+// gave it. None of them confirms it for Operations.
+const lowerers = (plan) => [plan.lowered?.by, plan.lowered?.reasonBy].filter(Boolean);
+
 // What still stands between a plan and going live, beyond its checks.
 function secondPerson(plan) {
   if (!lowered(plan)) return null;
-  if (!plan.lowered?.by) return 'A reason for the lower impact';
+  if (!plan.lowered?.reason) return 'A reason for the lower impact';
   const ops = plan.signoffs?.ops;
-  return ops && ops.by && ops.by !== plan.lowered.by ? null : 'Operations sign-off from someone other than the person who lowered the impact';
+  return ops && ops.by && !lowerers(plan).includes(ops.by) ? null : 'Operations sign-off from someone other than the person who lowered the impact';
 }
+
+// The checks each team's own work answers to. A team cannot say its part is done while one of them
+// fails: Operations publishes the detour, Passenger information tells riders at the stops.
+const OWNS = { ops: ['diversion', 'directions', 'dates'], passengers: ['notice'] };
 
 // A live change whose checks fail is a problem whatever else is true, and its label says why.
 export const liveOutlook = (o, liveFailing) => (liveFailing ? { ...o, light: 'red', label: 'Live, failing' } : o);
@@ -432,7 +443,7 @@ export async function changeRequestView(key, desk, { full = true, plan = null, l
     lines: plan.lines.map(lineInfo).filter(Boolean), starts: plan.starts, ends: plan.ends,
     startsLabel: dayLabel(plan.starts, desk.now), endsLabel: dayLabel(plan.ends, desk.now),
     directions: plan.directions, stops: plan.stops, notice: !!plan.notice,
-    lowered: plan.lowered ? { reason: plan.lowered.reason, by: plan.lowered.by, at: plan.lowered.at } : null,
+    lowered: plan.lowered ? { reason: plan.lowered.reason, by: plan.lowered.by, reasonBy: plan.lowered.reasonBy, at: plan.lowered.at } : null,
     signoffs: Object.entries(ROLES).map(([role, label]) => ({ role, label, ...(plan.signoffs?.[role] || {}) })),
     readiness: r,
     outlook: item ? liveOutlook(outlook(item, desk, plan, r), liveFailing) : null,
@@ -473,11 +484,22 @@ export async function savePlan(key, changes, loaded = null) {
   // work item's history says what changed, since narrowing the plan can turn a failing check green.
   const LABELS = { impact: 'Impact', directions: 'Directions', ends: 'Plan end', starts: 'Plan start' };
   const changed = Object.keys(LABELS).filter((k) => changes[k] !== undefined && changes[k] !== plan[k]);
+  // "Road closed" and "stops not served" are checked the same way, so swapping one for the other
+  // changes nothing the teams approved: it is noted, and the sign-offs stand.
+  const SAME = ['closed', 'stops'];
+  const rechecked = changed.filter((k) => !(k === 'impact' && SAME.includes(plan.impact) && SAME.includes(changes.impact)));
   // Lowering the impact, or dropping a direction, needs a reason; raising it clears the reason.
   const next = { ...plan, ...Object.fromEntries(changed.map((k) => [k, changes[k]])) };
   // A plan lowered before reasons were asked for can be given one without changing anything else.
-  const why = changed.some((k) => k === 'impact' || k === 'directions') ? lowering(next, changes.reason, changes.by)
-    : !plan.lowered && lowered(plan) && changes.reason ? lowering(plan, changes.reason, changes.by) : undefined;
+  // Whoever gives it, the person who lowered it stays on record: the plan never said who that was,
+  // so the person who opened the plan stands in, and neither of them confirms it for Operations.
+  let why;
+  if (rechecked.some((k) => k === 'impact' || k === 'directions')) why = lowering(next, changes.reason, changes.by);
+  else if (!plan.lowered && lowered(plan) && changes.reason) {
+    const given = lowering(plan, changes.reason, changes.by);
+    const opener = (await kvs.get(`cr:${plan.item}`))?.by || null;
+    why = { ...given, by: opener, reasonBy: changes.by };
+  }
   const said = changed.map((k) => `${LABELS[k]}: ${k === 'impact' ? IMPACTS[plan[k]] || 'not answered' : plan[k] || 'none'} → ${k === 'impact' ? IMPACTS[changes[k]] : changes[k]}`);
   if (why) said.push(`Reason: ${why.reason}`, 'Operations must sign off as someone else.');
   const signed = Object.keys(plan.signoffs || {}).length;
@@ -486,19 +508,19 @@ export async function savePlan(key, changes, loaded = null) {
   // Who to ask: everyone the plan now needs when it is first answered or its sign-offs were cleared,
   // and Operations when it was lowered.
   const firstAnswer = changed.includes('impact') && !plan.impact;
-  const ask = firstAnswer || (changed.length && signed) ? neededRoles(next) : why ? ['ops'] : [];
+  const ask = firstAnswer || (rechecked.length && signed) ? neededRoles(next) : why ? ['ops'] : [];
   if (!changed.length && !changes.notice && !why) return plan;
   const raw = await versioned(key, await kvs.get(`plan:${key}`));
   for (const k of changed) raw[k] = changes[k];
   if (why) raw.lowered = why;
   else if (why === null) delete raw.lowered;
-  if (changed.length) raw.version += 1;
+  if (rechecked.length) raw.version += 1;
   if (changes.notice) raw.notice = { at: new Date().toISOString() };
   await kvs.set(`plan:${key}`, raw);
-  Object.assign(plan, raw, changed.length ? { signoffs: {} } : {});
+  Object.assign(plan, raw, rechecked.length ? { signoffs: {} } : {});
   if (!raw.lowered) delete plan.lowered;
   await Promise.all([
-    audit || firstAnswer ? addComment(key, firstAnswer && !audit ? 'Sign-off needed' : signed ? 'Plan changed: sign-offs cleared' : 'Plan changed', said.join('\n'), 'user', ask).catch((e) => console.warn(`Change comment on ${key} failed: ${e.message}`)) : null,
+    audit || firstAnswer ? addComment(key, firstAnswer && !audit ? 'Sign-off needed' : signed && rechecked.length ? 'Plan changed: sign-offs cleared' : 'Plan changed', said.join('\n'), 'user', ask).catch((e) => console.warn(`Change comment on ${key} failed: ${e.message}`)) : null,
     publishStatus(key, plan, loaded),
   ]);
   if (changed.length) await syncFields(key, plan, loaded);
@@ -571,7 +593,13 @@ export async function signOff(key, role, accountId, undo = false, loaded = null)
   // The page sends the state it wants. When storage already has it (a stale page, a second tab),
   // nothing is written and no comment is posted.
   if (!!plan.signoffs?.[role] === !undo) return plan;
-  need(undo || role !== 'ops' || !plan.lowered || plan.lowered.by !== accountId, 'You lowered the impact of this plan, so someone else signs off for Operations');
+  need(undo || role !== 'ops' || !lowerers(plan).includes(accountId), 'You lowered the impact of this plan, so someone else signs off for Operations');
+  if (!undo && OWNS[role]) {
+    const { desk } = loaded || await currentDesk();
+    const item = desk.byId.get(plan.item);
+    const failing = item ? runChecks(plan, item, desk).checks.filter((c) => c.state === 'fail' && OWNS[role].includes(c.id)) : [];
+    need(!failing.length, `${ROLES[role]} can't sign off while ${failing.map((c) => `"${c.label}"`).join(' and ')} fails.`);
+  }
   const raw = await versioned(key, await kvs.get(`plan:${key}`));
   const at = `${signoffPrefix(key)}${role}`;
   if (undo) await kvs.delete(at);
@@ -677,11 +705,19 @@ export async function goLiveCheck(key, id = null) {
   if (!item) return { result: true };
   const r = readiness(plan, item, loaded.desk);
   if (r.ready) return { result: true };
-  const missing = [
-    ...r.checks.filter((c) => c.state === 'fail').map((c) => c.label),
-    ...(r.state === 'no-impact' ? (plan.signoffs?.ops ? [] : ['Operations sign-off']) : Object.keys(ROLES).filter((x) => !plan.signoffs?.[x]).map((x) => `${ROLES[x]} sign-off`)),
-  ].filter((m) => !r.blocker || m !== 'Operations sign-off').concat(r.blocker ? [r.blocker] : []);
-  return { result: false, errorMessage: `Detour Check: not ready to go live.${missing.length ? ` Missing: ${missing.join(', ')}.` : ''}` };
+  // What to fix first (a failing check), then who still has to sign off, then where to do it.
+  const quoted = (cs) => cs.map((c) => `"${c.label}"`).join(' and ');
+  const failing = r.checks.filter((c) => c.state === 'fail');
+  const due = r.checks.filter((c) => c.state === 'pending');
+  const teams = (r.state === 'no-impact' ? ['ops'] : Object.keys(ROLES)).filter((x) => !plan.signoffs?.[x] && !(x === 'ops' && r.blocker));
+  const said = [
+    ...(r.state === 'not-assessed' ? ['Say what the works do to buses.'] : []),
+    ...(failing.length ? [`${quoted(failing)} ${failing.length === 1 ? 'fails' : 'fail'}.`] : []),
+    ...(due.length ? [`${quoted(due)} can't be checked before ${dayLabel(due[0].due, loaded.desk.now)}.`] : []),
+    ...(teams.length ? [`Waiting for ${andList(teams.map((x) => ROLES[x]))} to sign off.`] : []),
+    ...(r.blocker ? [`${r.blocker}.`] : []),
+  ];
+  return { result: false, errorMessage: `Detour Check: ${said.join(' ')} Open Detour Check on this work item.` };
 }
 
 // A deleted work item takes its plan with it, so the roadworks can be planned again.
@@ -906,10 +942,13 @@ export const MARKED = 'detour-check-status';
 
 // `ask` names the teams whose people should hear about it: each is @mentioned in the note and
 // added as a watcher, so Jira's own notifications (bell, email, mobile) reach them.
+// `text` is plain text, or [subheading, text] pairs for a note with several parts.
+const paras = (text) => String(text || '').split(/\n{1,}/).filter(Boolean).slice(0, 40).map((t) => para(t));
 export async function addComment(key, heading, text, as = 'user', ask = []) {
   need(ISSUE_KEY.test(key), 'Unknown work item key');
   const asked = ask.length ? await askTeams(key, ask) : [];
-  const body = doc([para(heading, [{ type: 'strong' }]), ...String(text || '').split(/\n{1,}/).filter(Boolean).slice(0, 40).map((t) => para(t)), ...asked]);
+  const parts = Array.isArray(text) ? text.flatMap(([sub, t]) => [para(sub, [{ type: 'strong' }]), ...paras(t)]) : paras(text);
+  const body = doc([para(heading, [{ type: 'strong' }]), ...parts, ...asked]);
   // Internal notes in a service space: a public comment there is a reply that emails the customer.
   return jira(route`/rest/api/3/issue/${key}/comment`, { method: 'POST', body: JSON.stringify({ body, properties: [{ key: 'sd.public.comment', value: { internal: true } }] }) }, as);
 }
