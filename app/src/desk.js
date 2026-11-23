@@ -142,7 +142,8 @@ function gatedStatuses(statuses, refs, plans) {
 async function spaceWorkflows(project, projectId, planType) {
   const meta = await jira(route`/rest/api/3/issue/createmeta/${project}/issuetypes`);
   const types = (meta.issueTypes || meta.values || []).filter((t) => !t.subtask).map((t) => String(t.id));
-  const read = (ids) => jira(route`/rest/api/3/workflows`, { method: 'POST', body: JSON.stringify({ projectAndIssueTypes: ids.map((issueTypeId) => ({ projectId: String(projectId), issueTypeId })) }) });
+  // A space whose only type is the plans' own has no other workflows, and Jira refuses an empty read.
+  const read = async (ids) => (ids.length ? jira(route`/rest/api/3/workflows`, { method: 'POST', body: JSON.stringify({ projectAndIssueTypes: ids.map((issueTypeId) => ({ projectId: String(projectId), issueTypeId })) }) }) : null);
   const [own, rest] = await Promise.all([read([String(planType)]), read(types.filter((t) => t !== String(planType)))]);
   const plansWf = own?.workflows?.[0];
   need(plansWf, 'No workflow found for plans in this space');
@@ -209,29 +210,44 @@ const SPACE_KEYS = ['ROAD', 'ROADS', 'RWC', 'DETOUR', 'ROADWORKS'];
 // site without Jira Service Management, a plain business space with tasks stands in.
 const TEMPLATES = [
   ['service_desk', 'com.atlassian.servicedesk:simplified-it-service-management'],
+  // Sites made since Jira Service Management joined the Service Collection name the IT template
+  // differently.
+  ['service_desk', 'com.atlassian.servicedesk:simplified-it-service-management-operations'],
+  ['service_desk', 'com.atlassian.servicedesk:simplified-it-service-management-basic'],
   ['business', 'com.atlassian.jira-core-project-templates:jira-core-simplified-task-tracking'],
 ];
 
 async function createSpace() {
   // A space made by an earlier setup (one that timed out, say) is used rather than doubled.
   // It is looked up by name among all spaces, since create permission on a new space comes late.
-  const earlier = async () => (await jira(route`/rest/api/3/project/search?query=${SPACE_NAME}`).catch(() => null))?.values?.find((p) => p.name === SPACE_NAME);
+  const earlier = async () => (await jira(route`/rest/api/3/project/search?query=${SPACE_NAME}`).catch(() => null))?.values?.find((p) => p.name === SPACE_NAME || new RegExp(`^${SPACE_NAME} \\d$`).test(p.name));
   const before = await earlier();
   if (before) return { key: before.key, made: false };
   const me = await jira(route`/rest/api/3/myself`);
   let lastError = '';
+  // A space in the trash keeps its name, and no search finds it, so the next name is used instead.
+  const names = [SPACE_NAME, `${SPACE_NAME} 2`, `${SPACE_NAME} 3`];
+  let named = 0;
   for (const [projectTypeKey, projectTemplateKey] of TEMPLATES) {
-    for (const key of SPACE_KEYS) {
+    for (let k = 0; k < SPACE_KEYS.length; k++) {
+      const key = SPACE_KEYS[k];
+      const name = names[named];
       const taken = await jira(route`/rest/api/3/project/${key}`).then(() => true, () => false);
       if (taken) continue;
       try {
-        await jira(route`/rest/api/3/project`, { method: 'POST', body: JSON.stringify({ key, name: SPACE_NAME, projectTypeKey, projectTemplateKey, leadAccountId: me.accountId }) });
+        await jira(route`/rest/api/3/project`, { method: 'POST', body: JSON.stringify({ key, name, projectTypeKey, projectTemplateKey, leadAccountId: me.accountId }) });
         return { key, made: true };
       } catch (e) {
         lastError = e.message;
         // The name taken means an earlier setup got there first; a key held by a space in the trash
         // is worth the next key; anything else (a template this site cannot make) the next template.
-        if (/projectName/.test(e.message)) { const now = await earlier(); if (now) return { key: now.key, made: false }; break; }
+        if (/projectName/.test(e.message)) {
+          const now = await earlier();
+          if (now) return { key: now.key, made: false };
+          if (++named >= names.length) break;
+          if (!/projectKey/.test(e.message)) k--; // the same key, under the next name
+          continue;
+        }
         if (!/projectKey/.test(e.message)) break;
       }
     }

@@ -49,7 +49,13 @@ function handle(path, init = {}, as) {
     const b = JSON.parse(init.body);
     if (!s.admin) return json(403, { errorMessages: ['Admins only'] });
     if (!s.templates.includes(b.projectTypeKey)) return json(400, { errorMessages: ['Unknown project template'] });
-    if (s.projects[b.key]) return json(400, { errors: { projectKey: 'A project with that key already exists.' } });
+    // A space in the trash keeps its key and name but no search or read finds it.
+    const binned = Object.entries(s.trashed || {});
+    const errors = {
+      ...(binned.some(([, n]) => n === b.name) ? { projectName: 'A project with that name already exists.' } : {}),
+      ...(s.projects[b.key] || binned.some(([k]) => k === b.key) ? { projectKey: 'A project with that key already exists.' } : {}),
+    };
+    if (Object.keys(errors).length) return json(400, { errorMessages: [], errors });
     const change = b.projectTypeKey === 'service_desk';
     s.projects[b.key] = { name: b.name, projectTypeKey: b.projectTypeKey, types: change ? [{ id: '10', name: '[System] Change' }] : [{ id: '11', name: 'Task' }] };
     s.created.push(b);
@@ -57,6 +63,8 @@ function handle(path, init = {}, as) {
   }
   if (p === '/rest/api/3/workflows' && method === 'POST') {
     const pairs = JSON.parse(init.body).projectAndIssueTypes;
+    // Jira refuses a read that names nothing.
+    if (!pairs?.length) return json(400, { errorMessages: ['workflowReadRequest : Expected at least one set of workflow IDs, workflow names, or project and issue types'] });
     const found = new Map();
     for (const { projectId, issueTypeId } of pairs) {
       const key = Object.keys(s.projects).find((k) => projectIdOf(k) === projectId);

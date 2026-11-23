@@ -103,3 +103,17 @@ test('a work item moved to another space keeps its check', async () => {
   assert.equal((await goLive({ issue: { key: 'OTHER-9', id } })).result, false);
   assert.deepEqual(await goLive({ issue: { key: 'OTHER-10', id: '99999' } }), { result: true }, 'not a plan');
 });
+
+test('a space in the trash holding the name and key leads to the next name and key', async () => {
+  const s = jira.site;
+  s.trashed = { ROAD: 'Roadworks Changes' };
+  const out = await call('setUp', { create: true });
+  assert.equal(out.project, 'ROADS');
+  assert.equal(out.created, true);
+  assert.equal(s.projects.ROADS.name, 'Roadworks Changes 2');
+  assert.equal(s.projects.ROADS.projectTypeKey, 'service_desk');
+  // Run again, the numbered space is found rather than another made.
+  const again = await call('setUp', { create: true });
+  assert.equal(again.project, 'ROADS');
+  assert.equal(again.created, false);
+});

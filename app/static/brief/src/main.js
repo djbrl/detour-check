@@ -449,7 +449,7 @@ function spaceFacts() {
   const fields = sp.changeFields.length ? `${sp.changeFields.length} of ${sp.allFields} change fields` : 'no change fields';
   const teams = SETUP.teamGroups.length ? `Team groups for ${SETUP.teamGroups.length} of 4 teams` : 'Anyone who can edit a plan signs off';
   const g = sp.gate;
-  const gate = !g ? '' : g.error ? 'Go-live check unknown' : g.missing.length ? `Go-live check missing on ${g.missing.length} of ${g.missing.length + g.guarded.length} transitions` : `Go-live check on ${g.guarded.length} transitions`;
+  const gate = !g ? '' : g.error ? 'Go-live check unknown' : g.missing.length ? `Go-live check missing on ${g.missing.length} of ${g.missing.length + g.guarded.length} transitions` : `Go-live check on ${g.guarded.length} ${g.guarded.length === 1 ? 'transition' : 'transitions'}`;
   return `<p class="menu-note">${[type, fields, teams, gate].filter(Boolean).map(esc).join(' · ')}</p>`;
 }
 
@@ -497,7 +497,8 @@ async function renderSetup() {
   const group = (label, ps) => (ps.length ? `<optgroup label="${label}">${ps.map((p) => `<option value="${esc(p.key)}">${esc(p.name)} (${esc(p.key)})</option>`).join('')}</optgroup>` : '');
   const service = projects.filter((p) => p.projectTypeKey === 'service_desk');
   $('#space').innerHTML = `<option value="${NEW}">New space: ${SPACE_NAME}</option>${group('Service spaces', service)}${group('Other spaces', projects.filter((p) => p.projectTypeKey !== 'service_desk'))}`;
-  if (D.settings.project) $('#space').value = D.settings.project;
+  // A space that is gone isn't in the list, and choosing it would leave the box blank.
+  if (projects.some((p) => p.key === D.settings.project)) $('#space').value = D.settings.project;
   $('#save-space').onclick = () => setUp($('#space').value, $('#save-space'));
 }
 

@@ -12,7 +12,7 @@ Built for Codegeist 2026 on Atlassian Forge. Category: Apps for Specialized Indu
 
 ## Try it in two minutes
 
-1. Install the app on your Jira site (install link: to come with the production release).
+1. [Install Detour Check](https://developer.atlassian.com/console/install/6da71f64-f985-4d80-8158-d64afc976b81?signature=AYABeMCGCBiFzjxWWGXtiqhuYUIAAAADAAdhd3Mta21zAEthcm46YXdzOmttczp1cy13ZXN0LTI6NzA5NTg3ODM1MjQzOmtleS83MDVlZDY3MC1mNTdjLTQxYjUtOWY5Yi1lM2YyZGNjMTQ2ZTcAuAECAQB4CxqLTo9l4lqXuFjNim1xJM%2Bp%2F3TVP9xHS2BrU5DRRucBMs%2FmJg9pfZw98u3kp7xZ5QAAAH4wfAYJKoZIhvcNAQcGoG8wbQIBADBoBgkqhkiG9w0BBwEwHgYJYIZIAWUDBAEuMBEEDMxc5gCAdOpU3SDIZgIBEIA7LA0f%2B94G8pW8S9Sooj7uIYfyLXclQUPmhK%2FKn40%2BhkY5OvYZpMuuF%2BjJnwEo%2FghgL9u4kKtp9TcP3OYAB2F3cy1rbXMAS2Fybjphd3M6a21zOmV1LXdlc3QtMTo3MDk1ODc4MzUyNDM6a2V5LzQ2MzBjZTZiLTAwYzMtNGRlMi04NzdiLTYyN2UyMDYwZTVjYwC4AQICAHi9bVMAkme4qVQX1fQHo6ePw3H40A7cGfz7yrmSfBWMXgGrPyTlrvjzFE6X6n8%2Bfsl9AAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMVmEqdaEApjXTAV5wAgEQgDtiGYuCi9yTGBxFbefsVIIDA38Zq0L%2FymvJHX7AABC5mV%2FBQho0dqNmlswRrkOgS1Dziaxz4zQuWlc5mwAHYXdzLWttcwBLYXJuOmF3czprbXM6dXMtZWFzdC0xOjcwOTU4NzgzNTI0MzprZXkvNmMxMjBiYTAtNGNkNS00OTg1LWI4MmUtNDBhMDQ5NTJjYzU3ALgBAgIAeDYASx0XCjkny4iLV6vz%2BKtEGSGT6kdt0QRpkn6D%2FlVEAefpL%2BI0Qd50HLwseLW5x8kAAAB%2BMHwGCSqGSIb3DQEHBqBvMG0CAQAwaAYJKoZIhvcNAQcBMB4GCWCGSAFlAwQBLjARBAyl%2F1tY4MGfrdphe70CARCAO9coID7hjMW7VeXiEbasbF1PSQHhMUvOAfvNsYuEQfzAptaFR3NrDi%2BUX6LvlLxdKuq7zKZ1RSZLjBhyAgAAAAAMAAAQAAAAAAAAAAAAAAAAAO%2BdhOrJye9tPiIbdGAsnCX%2F%2F%2F%2F%2FAAAAAQAAAAAAAAAAAAAAAQAAADLTxW7hY9X6UWIV1hGncVWVN8ntJYMtGw%2BFWpdBvL4EtxhKwSjI%2BYgaseFGyJnG4eaA18%2BTSY8biToIJoclv6OMXXI%3D&product=jira) on a Jira site where you are an admin.
 2. Open **Apps → Detour Check**. The welcome tour sets the scene in five steps.
 3. Click **Set up**. Detour Check creates a Jira Service Management space, Roadworks Changes, or uses the
    space an admin picks instead (any space works), and adds its go-live check to the space's workflow.
@@ -21,9 +21,9 @@ Built for Codegeist 2026 on Atlassian Forge. Category: Apps for Specialized Indu
    works run until 4 December: seven days with no detour.
 5. Click **Yes, road closed, buses detour** to confirm the published plan. (A site with no detour asks what
    happens to buses instead, with four answers: Road closed, buses detour; Buses skip some stops; Buses
-   slowed, lane narrowed; No effect on buses.) Detour Check opens a change request in your space. In a Jira
-   Service Management space, it is a Change with the dates, risk, impact and implementation plan filled in;
-   in any other space, it is a Task.
+   slowed, lane narrowed; No effect on buses.) Detour Check opens a change request in your space. Where the space
+   has change management (Jira Service Management Premium or Enterprise), it is a Change with the dates, risk,
+   impact and implementation plan filled in; otherwise it is a Task.
 6. Sign off for Scheduling, Passenger information and Drivers. Operations can't sign off until the detour
    covers the whole works. Open the work item to see the same plan in its Detour Check panel, each sign-off
    as an internal note, and the go-live checks.
